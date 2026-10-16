@@ -199,4 +199,10 @@ class Core(
     suspend fun loadSession(path: String) = run("Loading session…") { load(path, false) }
 
     suspend fun loadLastResult() = run("Loading the last result…") { lastResult() }
+
+    /** Nothing could load before, because the archive wanted a sign-in: try the last result again. */
+    suspend fun afterSignIn() {
+        val ui = _ui.value
+        if (ui.session == null && ui.error.contains("needs an F1 TV sign-in")) loadLastResult()
+    }
 }

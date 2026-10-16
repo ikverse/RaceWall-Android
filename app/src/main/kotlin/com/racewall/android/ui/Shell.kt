@@ -7,6 +7,8 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -16,6 +18,11 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -28,6 +35,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import com.racewall.android.Frame
+import com.racewall.android.R
+import com.racewall.android.account.AccountStatus
 import com.racewall.android.Mode
 import com.racewall.android.UiState
 
@@ -41,35 +50,71 @@ data class Cells(val x: Int, val y: Int, val w: Int, val h: Int)
 /** The timing tower's place in the desktop's Race layout. */
 val TIMING_CELLS = Cells(0, 0, 13, 30)
 
-/** The whole window: title bar, the panel canvas, and the transport bar. */
+/** What the window can ask of the core beyond the transport bar. */
+interface AppActions : TransportActions {
+    /** Checks and keeps a token found after signing in on formula1.com. */
+    suspend fun signedIn(token: String)
+    fun signOut()
+}
+
+/** The whole window: title bar, the panel canvas, the transport bar, and the drawers over them. */
 @Composable
-fun RaceWallApp(frame: Frame, ui: UiState, mode: Mode, settings: TimingSettings, onFocus: (String) -> Unit, actions: TransportActions) {
-    Column(Modifier.fillMaxSize().background(Rw.bg)) {
-        TitleBar()
-        Box(Modifier.weight(1f).fillMaxWidth()) {
-            Canvas {
-                Panel("Timing", timingMeta(frame, mode)) {
-                    TimingTower(frame, settings, ui.focusDriver, onFocus)
+fun RaceWallApp(
+    frame: Frame,
+    ui: UiState,
+    mode: Mode,
+    settings: TimingSettings,
+    onFocus: (String) -> Unit,
+    actions: AppActions,
+    account: AccountStatus = AccountStatus(),
+) {
+    var drawer by rememberSaveable { mutableStateOf<String?>(null) }
+    var signingIn by remember { mutableStateOf(false) }
+    Box(Modifier.fillMaxSize().background(Rw.bg)) {
+        Column(Modifier.fillMaxSize()) {
+            TitleBar {
+                RwButton(onClick = { drawer = if (drawer == "settings") null else "settings" }, on = drawer == "settings", label = "Settings", horizontalPadding = 8f) { c ->
+                    Icon(R.drawable.ic_settings, c)
+                }
+            }
+            Box(Modifier.weight(1f).fillMaxWidth()) {
+                Canvas {
+                    Panel("Timing", timingMeta(frame, mode)) {
+                        TimingTower(frame, settings, ui.focusDriver, onFocus)
+                    }
+                }
+            }
+            Transport(frame, ui, actions)
+        }
+        if (drawer == "settings") {
+            Box(Modifier.fillMaxSize().padding(top = 38.dp), contentAlignment = Alignment.TopEnd) {
+                Drawer("Settings", onClose = { drawer = null }) {
+                    AccountSection(account, busy = signingIn, onSignIn = { signingIn = true }, onSignOut = {
+                        clearSignIn()
+                        actions.signOut()
+                    })
                 }
             }
         }
-        Transport(frame, ui, actions)
+        if (signingIn) SignInDialog(onToken = { actions.signedIn(it) }, onClose = { signingIn = false })
     }
 }
 
-/** The title bar: 38 high, the logo, a line below. */
+/** The title bar: 38 high, the logo on the left and the window's buttons on the right, a line below. */
 @Composable
-fun TitleBar() {
+fun TitleBar(right: @Composable RowScope.() -> Unit = {}) {
     Row(
         Modifier
             .fillMaxWidth()
             .height(38.dp)
             .drawBehind { drawLine(Rw.border, Offset(0f, size.height - 0.5f), Offset(size.width, size.height - 0.5f), 1.dp.toPx()) }
-            .padding(start = 12.dp),
+            .padding(start = 12.dp, end = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(2.dp),
     ) {
         Logo()
+        Spacer(Modifier.weight(1f))
+        right()
     }
 }
 

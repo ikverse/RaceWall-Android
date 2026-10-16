@@ -50,6 +50,7 @@ dependencies {
     implementation(project(":core:clock"))
     implementation(project(":core:topics"))
     implementation(project(":data:archive"))
+    implementation(project(":data:account"))
 
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.activity.compose)
