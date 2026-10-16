@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The "RW" monogram of design/DESIGN-LOCK.md, R in the light grey and W in the brand red, drawn from Russo One's own outlines. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#FFD0D0D0"
+        android:pathData="M26.00,42.12L40.25,42.12Q43.82,42.12 45.43,43.73Q47.04,45.35 47.04,48.91L47.04,51.96Q47.04,54.78 46.11,56.34Q45.18,57.90 43.14,58.41L47.38,65.88L40.76,65.88L36.86,58.75L32.11,58.75L32.11,65.88L26.00,65.88L26.00,42.12ZM40.93,48.91Q40.93,46.87 38.90,46.87L32.11,46.87L32.11,54.00L38.90,54.00Q40.93,54.00 40.93,51.96L40.93,48.91Z" />
+    <path
+        android:fillColor="#FFA0151E"
+        android:pathData="M67.75,42.12L71.82,57.39L75.38,42.12L82.00,42.12L75.55,65.88L69.10,65.88L65.03,51.12L60.96,65.88L54.51,65.88L48.06,42.12L54.68,42.12L58.24,57.39L62.32,42.12L67.75,42.12Z" />
+</vector>
