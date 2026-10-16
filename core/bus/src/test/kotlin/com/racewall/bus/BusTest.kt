@@ -44,6 +44,28 @@ class MergeFeedTest {
     }
 }
 
+class FeedJsonWriteTest {
+    @Test
+    fun `writes text that reads back as the same value`() {
+        val text = """{"a":1,"b":2.0,"c":-3.25,"d":1.0E10,"e":"1:37.840","f":"tab\tquote\"slash\\ü 日本 🏁","g":[true,false,null,[],{}],"h":{"i":{"j":[1,2.5,"x"]}},"k":""}"""
+        val value = FeedJson.parse(text)
+        val again = FeedJson.parse(FeedJson.write(value))
+        assertEquals(value, again)
+        @Suppress("UNCHECKED_CAST")
+        val m = again as Map<String, Any?>
+        assertEquals(1L, m["a"])
+        assertEquals(2.0, m["b"])
+        assertEquals(1.0E10, m["d"])
+        assertEquals("tab\tquote\"slash\\ü 日本 🏁", m["f"])
+        assertEquals(listOf("a", "b", "c", "d", "e", "f", "g", "h", "k"), m.keys.toList())
+    }
+
+    @Test
+    fun `writes compact JSON`() {
+        assertEquals("""{"a":[1,2.5,null],"b":"x"}""", FeedJson.write(FeedJson.parse("""{ "a" : [ 1, 2.5, null ], "b" : "x" }""")))
+    }
+}
+
 class TimelineTest {
     private class Sum(var v: Int)
 
@@ -78,6 +100,21 @@ class TimelineTest {
         val tl = sum()
         tl.append(10.0, 1)
         assertFailsWith<IllegalArgumentException> { tl.append(5.0, 1) }
+    }
+
+    @Test
+    fun `keyframes packed as text give the same states as copies, playing and jumping`() {
+        fun feed(packed: Boolean) = if (packed) Timeline<Any?, Any?>({ LinkedHashMap<String, Any?>() }, { s, d -> mergeFeed(s, d) }, 4, pack = FeedJson::write, unpack = { FeedJson.parse(it as String) })
+        else Timeline<Any?, Any?>({ LinkedHashMap<String, Any?>() }, { s, d -> mergeFeed(s, d) }, 4)
+        val plain = feed(false)
+        val packed = feed(true)
+        for (i in 0 until 50) {
+            val d = FeedJson.parse("""{"Lines":{"${i % 5}":{"Position":"${i % 7}","Gap":${i * 1.5},"Laps":$i,"Sectors":{"${i % 3}":{"Value":"2${i % 10}.1"}}}},"_deleted":${if (i % 11 == 10) "[\"Lines\"]" else "[]"}}""")
+            plain.append(i * 10.0, d)
+            packed.append(i * 10.0, FeedJson.parse(FeedJson.write(d)))
+        }
+        val moments = (0..500 step 5).map { it.toDouble() } + listOf(490.0, 3.0, 250.0, 251.0, 0.0, 120.0, 499.0, 77.0)
+        for (t in moments) assertEquals(FeedJson.write(plain.stateAt(t)), FeedJson.write(packed.stateAt(t)), "at $t")
     }
 
     @Test

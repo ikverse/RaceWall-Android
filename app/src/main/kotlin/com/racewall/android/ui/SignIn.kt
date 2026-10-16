@@ -1,7 +1,9 @@
 package com.racewall.android.ui
 
 import android.annotation.SuppressLint
+import android.view.ViewGroup
 import android.webkit.CookieManager
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebStorage
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -13,6 +15,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -70,7 +73,7 @@ fun SignInDialog(onToken: suspend (String) -> Unit, onClose: () -> Unit) {
         }
     }
     Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
-        Column(Modifier.fillMaxSize().background(Rw.bg)) {
+        Column(Modifier.fillMaxSize().background(Rw.bg).systemBarsPadding()) {
             Row(
                 Modifier
                     .fillMaxWidth()
@@ -85,12 +88,23 @@ fun SignInDialog(onToken: suspend (String) -> Unit, onClose: () -> Unit) {
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 AndroidView(
                     factory = { context ->
+                        // Debug builds can be inspected from a computer, to see why a sign-in page misbehaves.
+                        if (com.racewall.android.BuildConfig.DEBUG) WebView.setWebContentsDebuggingEnabled(true)
                         WebView(context).apply {
+                            // A wrap-content web view gives CSS "vh" no height, which hides formula1.com's
+                            // consent box, and the login form waits for that box.
+                            layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
                             setBackgroundColor(android.graphics.Color.BLACK)
                             settings.javaScriptEnabled = true
                             settings.domStorageEnabled = true
                             CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
-                            webViewClient = WebViewClient()
+                            webViewClient = object : WebViewClient() {
+                                // A crashed page process reloads the sign-in page instead of closing RaceWall.
+                                override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
+                                    view.post { view.loadUrl(LOGIN_URL) }
+                                    return true
+                                }
+                            }
                             loadUrl(LOGIN_URL)
                         }
                     },

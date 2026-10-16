@@ -2,6 +2,7 @@ package com.racewall.archive
 
 import com.racewall.bus.Bus
 import com.racewall.bus.FeedJson
+import com.racewall.bus.jsString
 import com.racewall.topics.CarPositions
 import com.racewall.topics.CarTelemetry
 import com.racewall.topics.CarTelemetryMap
@@ -110,6 +111,40 @@ class RecordingTopicsTest {
 }
 
 /** Ported from the desktop's packages/f1-archive/test/laps.test.ts. */
+/** Car data is built one compressed line at a time, with the same result as decoding the files whole. */
+class CarDataBuildTest {
+    private fun read(f: String) = CarDataBuildTest::class.java.getResource("/2025-british-gp-race/$f")!!.readText(Charsets.UTF_8)
+
+    @Test
+    fun `builds the same positions and telemetry as decoding every line first`() {
+        val position = read("Position.z.jsonStream")
+        val carData = read("CarData.z.jsonStream")
+        val positions = decodeZStream(position).toList()
+        val telemetry = decodeZStream(carData).toList()
+        assertTrue(positions.size > 10 && telemetry.size > 10)
+        // Session time from the first sample, so the fixture needs no session around it.
+        val first = ((positions[0] as Map<*, *>)["Position"] as List<*>)[0] as Map<*, *>
+        val utc0 = parseUtc(jsString(first["Timestamp"]!!))!!.toDouble()
+        val whole = CarData { it - utc0 }
+        positions.forEach(whole::addPosition)
+        telemetry.forEach(whole::addCarData)
+        val streamed = CarData.build(position, carData) { it - utc0 }
+        for (t in listOf(0.0, 1_000.0, 5_000.0, 20_000.0, 60_000.0)) {
+            assertEquals(whole.positionsAt(t), streamed.positionsAt(t))
+            assertEquals(whole.telemetryAt(t), streamed.telemetryAt(t))
+        }
+        assertTrue(streamed.positionsAt(5_000.0)!!.isNotEmpty())
+        assertEquals(whole.telemetryRange(0.0, 60_000.0, null), streamed.telemetryRange(0.0, 60_000.0, null))
+    }
+
+    @Test
+    fun `skips damaged and empty lines`() {
+        val good = read("Position.z.jsonStream").lineSequence().first { '"' in it }
+        val text = "﻿$good\n\n00:00:01.000\"not base64 at all!\"\r\n$good"
+        assertEquals(2, decodeZStream(text).count())
+    }
+}
+
 class LapHistoryTest {
     private fun j(text: String) = FeedJson.parse(text)
 

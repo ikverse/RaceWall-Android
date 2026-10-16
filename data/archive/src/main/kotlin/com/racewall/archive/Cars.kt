@@ -43,39 +43,64 @@ fun decodeZ(base64: String): Any? {
     }
 }
 
-/** Decodes every line of a `.z.jsonStream` file into its JSON payload. */
-fun decodeZStream(text: String): List<Any?> {
-    val out = ArrayList<Any?>()
-    for (line in stripBom(text).split('\n')) {
-        val start = line.indexOf('"')
-        val end = line.lastIndexOf('"')
-        if (start < 0 || end <= start) continue
-        try {
-            out.add(decodeZ(line.substring(start + 1, end)))
+/**
+ * Decodes each line of a `.z.jsonStream` file into its JSON payload, one line at a time as it is
+ * read: a race's decoded payloads are far larger than the app's memory, so they are never held
+ * together.
+ */
+fun decodeZStream(text: String): Sequence<Any?> = sequence {
+    val body = stripBom(text)
+    var from = 0
+    while (from < body.length) {
+        val nl = body.indexOf('\n', from).let { if (it < 0) body.length else it }
+        val start = body.indexOf('"', from)
+        val end = body.lastIndexOf('"', nl - 1)
+        from = nl + 1
+        if (start < 0 || start >= nl || end <= start) continue
+        val payload = try {
+            decodeZ(body.substring(start + 1, end))
         } catch (_: Exception) {
-            // a damaged line; skip it
+            continue // a damaged line; skip it
         }
+        yield(payload)
     }
-    return out
 }
 
-/** Per car, columns of numbers sorted by time. */
-private class Series(width: Int) {
+/**
+ * Per car, columns of numbers sorted by time, kept small: a race has about 36,000 samples per car
+ * in each feed. Times are whole session milliseconds (UTC minus a whole-millisecond anchor), and
+ * values are whole numbers well inside a float's exact range, so nothing is lost.
+ */
+private class Series(width: Int, withFlag: Boolean = false) {
     var size = 0
         private set
-    var t = DoubleArray(256)
-        private set
-    val cols = Array(width) { DoubleArray(256) }
+    private var times = IntArray(256)
+    private val cols = Array(width) { FloatArray(256) }
+    private var flags = if (withFlag) ByteArray(256) else null
 
-    fun push(time: Double, values: DoubleArray) {
-        if (size > 0 && time < t[size - 1]) return // ignore the odd out-of-order sample
-        if (size == t.size) {
-            t = t.copyOf(size * 2)
-            for (i in cols.indices) cols[i] = cols[i].copyOf(size * 2)
-        }
-        t[size] = time
-        for (i in values.indices) cols[i][size] = values[i]
+    fun t(i: Int): Double = times[i].toDouble()
+    fun v(col: Int, i: Int): Double = cols[col][i].toDouble()
+    fun flag(i: Int): Boolean = flags!![i] == 1.toByte()
+
+    fun push(time: Double, values: DoubleArray, flag: Boolean = false) {
+        val ms = Math.round(time).toInt()
+        if (size > 0 && ms < times[size - 1]) return // ignore the odd out-of-order sample
+        if (size == times.size) resize(size + (size shr 1))
+        times[size] = ms
+        for (i in values.indices) cols[i][size] = values[i].toFloat()
+        flags?.let { it[size] = if (flag) 1 else 0 }
         size++
+    }
+
+    /** Drops the unused room at the end, once no more samples are coming. */
+    fun trim() {
+        if (size < times.size) resize(maxOf(size, 1))
+    }
+
+    private fun resize(n: Int) {
+        times = times.copyOf(n)
+        for (i in cols.indices) cols[i] = cols[i].copyOf(n)
+        flags = flags?.copyOf(n)
     }
 
     /** Index of the last sample at or before `time`. */
@@ -85,7 +110,7 @@ private class Series(width: Int) {
         var found = -1
         while (lo <= hi) {
             val mid = (lo + hi) ushr 1
-            if (t[mid] <= time) {
+            if (times[mid] <= time) {
                 found = mid
                 lo = mid + 1
             } else hi = mid - 1
@@ -102,10 +127,10 @@ private const val STALE_MS = 5000.0
  * time (NaN when there is no anchor yet).
  */
 class CarData(private val utcToT: (Double) -> Double) {
-    private val pos = LinkedHashMap<String, Series>() // x, y, z, onTrack
+    private val pos = LinkedHashMap<String, Series>() // x, y, z; the flag is on track
     private val tel = LinkedHashMap<String, Series>() // speed, rpm, gear, throttle, brake, drs
 
-    private fun series(m: MutableMap<String, Series>, key: String, width: Int) = m.getOrPut(key) { Series(width) }
+    private fun series(m: MutableMap<String, Series>, key: String, width: Int, withFlag: Boolean = false) = m.getOrPut(key) { Series(width, withFlag) }
 
     private fun number(v: Any?): Double = when (v) {
         is Number -> v.toDouble()
@@ -124,7 +149,7 @@ class CarData(private val utcToT: (Double) -> Double) {
             if (t.isNaN()) continue
             for ((car, e) in obj(p["Entries"])) {
                 val v = obj(e)
-                series(pos, car, 4).push(t, doubleArrayOf(number(v["X"]), number(v["Y"]), number(v["Z"]), if (v["Status"] == "OnTrack") 1.0 else 0.0))
+                series(pos, car, 3, withFlag = true).push(t, doubleArrayOf(number(v["X"]), number(v["Y"]), number(v["Z"])), v["Status"] == "OnTrack")
             }
         }
     }
@@ -150,12 +175,12 @@ class CarData(private val utcToT: (Double) -> Double) {
         val out = LinkedHashMap<String, CarPosition>()
         for ((car, s) in pos) {
             val i = s.indexAt(t)
-            if (i < 0 || t - s.t[i] > STALE_MS) continue
+            if (i < 0 || t - s.t(i) > STALE_MS) continue
             val j = minOf(i + 1, s.size - 1)
-            val span = s.t[j] - s.t[i]
-            val k = if (j > i && span > 0 && span < STALE_MS) (t - s.t[i]) / span else 0.0
-            fun at(c: Int) = s.cols[c][i] + (s.cols[c][j] - s.cols[c][i]) * k
-            out[car] = CarPosition(jsRound(at(0)), jsRound(at(1)), jsRound(at(2)), s.cols[3][i] == 1.0)
+            val span = s.t(j) - s.t(i)
+            val k = if (j > i && span > 0 && span < STALE_MS) (t - s.t(i)) / span else 0.0
+            fun at(c: Int) = s.v(c, i) + (s.v(c, j) - s.v(c, i)) * k
+            out[car] = CarPosition(jsRound(at(0)), jsRound(at(1)), jsRound(at(2)), s.flag(i))
         }
         return out
     }
@@ -166,9 +191,9 @@ class CarData(private val utcToT: (Double) -> Double) {
         val out = LinkedHashMap<String, CarTelemetry>()
         for ((car, s) in tel) {
             val i = s.indexAt(t)
-            if (i < 0 || t - s.t[i] > STALE_MS) continue
-            val c = s.cols
-            out[car] = CarTelemetry(c[0][i].toInt(), c[1][i].toInt(), c[2][i].toInt(), c[3][i].toInt(), c[4][i].toInt(), c[5][i].toInt())
+            if (i < 0 || t - s.t(i) > STALE_MS) continue
+            fun c(n: Int) = s.v(n, i).toInt()
+            out[car] = CarTelemetry(c(0), c(1), c(2), c(3), c(4), c(5))
         }
         return out
     }
@@ -181,16 +206,23 @@ class CarData(private val utcToT: (Double) -> Double) {
             if (cars != null && car !in cars) continue
             val list = ArrayList<TelemetrySample>()
             var i = maxOf(0, s.indexAt(from))
-            while (i < s.size && s.t[i] <= to) {
-                if (s.t[i] >= from) {
-                    val c = s.cols
-                    list.add(TelemetrySample(s.t[i], c[0][i].toInt(), c[1][i].toInt(), c[2][i].toInt(), c[3][i].toInt(), c[4][i].toInt(), c[5][i].toInt()))
+            while (i < s.size && s.t(i) <= to) {
+                if (s.t(i) >= from) {
+                    fun c(n: Int) = s.v(n, i).toInt()
+                    list.add(TelemetrySample(s.t(i), c(0), c(1), c(2), c(3), c(4), c(5)))
                 }
                 i++
             }
             out[car] = list
         }
         return out
+    }
+
+    /** Drops the unused room in every column, once a replay's files are fully read. */
+    @Synchronized
+    fun trim() {
+        pos.values.forEach(Series::trim)
+        tel.values.forEach(Series::trim)
     }
 
     private class Candidate(val s: Series, val a: Int, val b: Int, val length: Double, val gap: Double)
@@ -209,12 +241,12 @@ class CarData(private val utcToT: (Double) -> Double) {
             val last = s.indexAt(fromT + lapMs * 1.3)
             if (last - a < 40) continue
             // End where the car comes back closest to where it started, after most of a lap.
-            val x0 = s.cols[0][a]
-            val y0 = s.cols[1][a]
+            val x0 = s.v(0, a)
+            val y0 = s.v(1, a)
             var b = -1
             var gap = Double.POSITIVE_INFINITY
             for (i in a + ((last - a) * 0.6).toInt()..last) {
-                val d = hypot(s.cols[0][i] - x0, s.cols[1][i] - y0)
+                val d = hypot(s.v(0, i) - x0, s.v(1, i) - y0)
                 if (d < gap) {
                     gap = d
                     b = i
@@ -224,8 +256,8 @@ class CarData(private val utcToT: (Double) -> Double) {
             var on = 0.0
             var length = 0.0
             for (i in a..b) {
-                on += s.cols[3][i]
-                if (i > a) length += hypot(s.cols[0][i] - s.cols[0][i - 1], s.cols[1][i] - s.cols[1][i - 1])
+                if (s.flag(i)) on += 1.0
+                if (i > a) length += hypot(s.v(0, i) - s.v(0, i - 1), s.v(1, i) - s.v(1, i - 1))
             }
             if (on < (b - a) * 0.95) continue
             candidates.add(Candidate(s, a, b, length, gap))
@@ -242,10 +274,10 @@ class CarData(private val utcToT: (Double) -> Double) {
         var minY = Double.POSITIVE_INFINITY
         var maxY = Double.NEGATIVE_INFINITY
         for (i in best.a..best.b) {
-            val x = best.s.cols[0][i]
-            val y = best.s.cols[1][i]
+            val x = best.s.v(0, i)
+            val y = best.s.v(1, i)
             if (x == 0.0 && y == 0.0) continue
-            points.add(Triple(x, y, best.s.cols[2][i]))
+            points.add(Triple(x, y, best.s.v(2, i)))
             minX = minOf(minX, x)
             maxX = maxOf(maxX, x)
             minY = minOf(minY, y)
@@ -255,11 +287,12 @@ class CarData(private val utcToT: (Double) -> Double) {
     }
 
     companion object {
-        /** Builds car data from the two compressed feeds read whole, as for a replay. */
+        /** Builds car data from the two compressed feeds read whole, as for a replay, one line at a time. */
         fun build(positionText: String, carDataText: String, utcToT: (Double) -> Double): CarData {
             val cars = CarData(utcToT)
             for (payload in decodeZStream(positionText)) cars.addPosition(payload)
             for (payload in decodeZStream(carDataText)) cars.addCarData(payload)
+            cars.trim()
             return cars
         }
 

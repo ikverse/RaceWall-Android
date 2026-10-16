@@ -87,6 +87,19 @@ private fun clockText(seconds: Double): String {
 }
 
 /**
+ * Which stream a panel should be playing: null until both the video and its channel list are
+ * known. The main feed has no channel id, so the channel's id alone cannot tell "no channel yet"
+ * from "the main feed".
+ */
+internal fun streamRequest(contentId: Long?, channel: F1Tv.Channel?): String? =
+    if (contentId == null || channel == null) null else "$contentId|${channel.channelId ?: "main"}"
+
+/** Debug builds only: what the panel does, never tokens or full stream addresses. */
+private fun debugLog(text: String) {
+    if (com.racewall.android.BuildConfig.DEBUG) android.util.Log.d("RaceWallVideo", text)
+}
+
+/**
  * An F1 TV player, as the desktop's VideoPanel.svelte. Plays the video of whatever session RaceWall
  * has loaded, on the channel the panel is set to, with the user's own subscription. Tap the picture
  * for its controls; they hide again on their own.
@@ -191,20 +204,23 @@ fun VideoPanel(s: WidgetScope) {
                 return@LaunchedEffect
             }
             videos = list
+            debugLog("panel $panelId: ${list.size} videos for session $key, first ${list[0].contentId}")
             details = env.details(list[0].contentId)
+            debugLog("panel $panelId: details with ${details?.channels?.size} channels")
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
+            debugLog("panel $panelId: finding videos failed: $e")
             problem = e.message ?: e.toString()
         }
     }
 
     // Load the stream whenever the video or channel changes.
     var streamKey by remember { mutableStateOf("") }
-    LaunchedEffect(contentId, channel?.channelId) {
+    LaunchedEffect(streamRequest(contentId, channel)) {
         val id = contentId ?: return@LaunchedEffect
         val ch = channel ?: return@LaunchedEffect
-        val k = "$id|${ch.channelId}"
+        val k = streamRequest(id, ch) ?: return@LaunchedEffect
         if (k == streamKey) return@LaunchedEffect
         val first = streamKey.isEmpty()
         streamKey = k
@@ -215,7 +231,9 @@ fun VideoPanel(s: WidgetScope) {
                 problem = "Sign in with your F1 account (Settings) to watch F1 TV."
                 return@LaunchedEffect
             }
+            debugLog("panel $panelId: asking for stream $id channel ${ch.channelId}")
             val info = env.play(id, ch.channelId)
+            debugLog("panel $panelId: stream ${info.streamType}, licence server ${if (info.licenseUrl != null) "named" else "none"}, drm ${info.drmType}, host ${android.net.Uri.parse(info.url).host}")
             // A player opening after a layout switch carries on from the players that left: a synced
             // replay starts where the session clock has got to meanwhile, a live player the same
             // distance behind live, and it plays or stays paused as they did.
@@ -230,15 +248,18 @@ fun VideoPanel(s: WidgetScope) {
             }
             player.exo.volume = if (hub.audible == panelId) volume.toFloat() else 0f
             if (h == null || h.playing) player.exo.play()
+            debugLog("panel $panelId: loaded, start $start, playing ${h == null || h.playing}")
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
+            debugLog("panel $panelId: stream failed: $e")
             problem = e.message ?: e.toString()
         }
     }
     DisposableEffect(player) {
         val listener = object : Player.Listener {
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                debugLog("panel $panelId: player error ${error.errorCodeName}: ${error.cause}")
                 problem = if (error.errorCode in 6000..6999) "This video is copy-protected and could not play (error ${error.errorCodeName})." else "The video could not play (${error.errorCodeName})."
             }
         }

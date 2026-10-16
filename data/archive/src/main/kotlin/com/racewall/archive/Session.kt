@@ -70,7 +70,10 @@ class SessionModel(
 
     private var rawInfo: Any? = info ?: LinkedHashMap<String, Any?>()
     private val tl: Map<String, Timeline<Any?, Any?>> =
-        STREAMS.associateWith { Timeline<Any?, Any?>({ LinkedHashMap<String, Any?>() }, { s, d -> mergeFeed(s, d) }) }
+        // Keyframes kept as compact JSON text: a race's full-state copies are far too large as objects.
+        STREAMS.associateWith {
+            Timeline<Any?, Any?>({ LinkedHashMap<String, Any?>() }, { s, d -> mergeFeed(s, d) }, pack = FeedJson::write, unpack = { FeedJson.parse(it as String) })
+        }
     private val history = LapHistoryBuilder()
     private val messages = ArrayList<TimedMessage>()
     private val weather = ArrayList<WeatherEntry>()
