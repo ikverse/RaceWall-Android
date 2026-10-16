@@ -22,6 +22,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.text.style.TextOverflow
@@ -56,14 +57,21 @@ private val SOURCE_NAMES = mapOf("f1-live" to "F1 live timing", "f1-archive" to 
  * position in the session, the speed, the lap and the clock, the track flag, and what is loading.
  */
 @Composable
-fun Transport(frame: Frame, ui: UiState, actions: TransportActions, modifier: Modifier = Modifier) {
-    var pickerOpen by remember { mutableStateOf(false) }
+fun Transport(
+    frame: Frame,
+    ui: UiState,
+    actions: TransportActions,
+    pickerOpen: Boolean,
+    setPicker: (Boolean) -> Unit,
+    chromeAlpha: Float = 1f,
+    modifier: Modifier = Modifier,
+) {
     val info = frame.info
     val clock = frame.clock
     val flag = frame.status?.let { Format.flag(it.flag) }
     val sourceText = frame.sources.joinToString(", ") { SOURCE_NAMES[it] ?: it }
 
-    Box(modifier.fillMaxWidth().height(34.dp)) {
+    Box(modifier.fillMaxWidth().height(34.dp).alpha(chromeAlpha)) {
         Row(
             Modifier
                 .fillMaxWidth()
@@ -73,7 +81,7 @@ fun Transport(frame: Frame, ui: UiState, actions: TransportActions, modifier: Mo
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            RwButton(onClick = { pickerOpen = !pickerOpen }, label = "Pick a past session", modifier = Modifier.widthIn(max = 340.dp)) { c ->
+            RwButton(onClick = { setPicker(!pickerOpen) }, label = "Pick a past session", modifier = Modifier.widthIn(max = 340.dp)) { c ->
                 Icon(R.drawable.ic_folder, c)
                 BasicText(
                     if (info != null && info.meeting.isNotEmpty()) "${info.meeting} · ${info.name} ${Format.year(info.startDate)}" else "Pick a session",
@@ -112,7 +120,7 @@ fun Transport(frame: Frame, ui: UiState, actions: TransportActions, modifier: Mo
             }
             if (sourceText.isNotEmpty()) BasicText("Sources: $sourceText", style = Rw.text(12f, Rw.t3), maxLines = 1)
         }
-        if (pickerOpen) SessionPicker(actions, onClose = { pickerOpen = false })
+        if (pickerOpen) SessionPicker(actions, onClose = { setPicker(false) })
     }
 }
 

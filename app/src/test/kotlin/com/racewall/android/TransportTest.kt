@@ -8,6 +8,8 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.performTouchInput
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import com.racewall.android.ui.RaceWallTheme
 import com.racewall.android.ui.Transport
 import com.racewall.android.ui.TransportActions
@@ -52,7 +54,10 @@ class TransportTest {
     private val frame = BritishGp.frameAt(BritishGp.LAP_4)
 
     private fun show(f: Frame = frame, ui: UiState = UiState(), actions: Fake = Fake()): Fake {
-        compose.setContent { RaceWallTheme { Transport(f, ui, actions) } }
+        compose.setContent {
+            var picker by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+            RaceWallTheme { Transport(f, ui, actions, picker, { picker = it }) }
+        }
         return actions
     }
 
@@ -61,7 +66,7 @@ class TransportTest {
         show()
         compose.onNodeWithText("British Grand Prix · Race 2025").assertExists()
         compose.onNodeWithText("Lap 4 / 52 · 14:11:40 UTC").assertExists()
-        compose.onNodeWithText("Sources: F1 archive").assertExists()
+        compose.onNodeWithText("Sources: F1 archive", substring = true).assertExists()
     }
 
     @Test
@@ -95,7 +100,7 @@ class TransportTest {
 
     @Test
     fun `shows the track flag in its colour`() {
-        show(frame.copy(status = SessionStatus(SessionState.STARTED, TrackFlag.SC, 20, 52)))
+        show(frame.copy(topics = frame.topics + (com.racewall.topics.Topic.SESSION_STATUS to SessionStatus(SessionState.STARTED, TrackFlag.SC, 20, 52))))
         compose.onNodeWithText("Safety car").assertExists()
     }
 
