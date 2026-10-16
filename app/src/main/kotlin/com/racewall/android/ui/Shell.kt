@@ -111,7 +111,7 @@ private fun switchTo(layouts: Layouts, name: String, actions: AppActions) {
  * the canvas a pixel or two now and then, to spare OLED screens.
  */
 @Composable
-fun RaceWallApp(screen: Screen, actions: AppActions, video: @Composable (Panel, (String) -> Unit) -> Unit = { _, _ -> }) {
+fun RaceWallApp(screen: Screen, actions: AppActions, videoDriving: Boolean = false) {
     var edit by rememberSaveable { mutableStateOf(false) }
     var drawer by rememberSaveable { mutableStateOf<String?>(null) }
     var commandBar by rememberSaveable { mutableStateOf(false) }
@@ -224,10 +224,10 @@ fun RaceWallApp(screen: Screen, actions: AppActions, video: @Composable (Panel, 
                     edit = edit,
                     chromeAlpha = chromeAlpha,
                     dimPanels = settings.dimPanels,
-                    actions = CanvasActions(actions::setLayouts, { edit = it }, { n -> actions.focus(if (screen.ui.focusDriver == n) null else n) }, actions::range, video),
+                    actions = CanvasActions(actions::setLayouts, { edit = it }, { n -> actions.focus(if (screen.ui.focusDriver == n) null else n) }, actions::range),
                 )
             }
-            Transport(screen.frame, screen.ui, actions, picker, { picker = it }, chromeAlpha)
+            Transport(screen.frame, screen.ui, actions, picker, { picker = it }, chromeAlpha, videoDriving = videoDriving)
         }
         if (drawer == "settings") {
             Box(Modifier.fillMaxSize().padding(top = 38.dp), contentAlignment = Alignment.TopEnd) {

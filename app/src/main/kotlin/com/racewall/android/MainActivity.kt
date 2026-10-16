@@ -1,6 +1,12 @@
 package com.racewall.android
 
 import android.Manifest
+import androidx.compose.runtime.CompositionLocalProvider
+import com.racewall.android.video.LocalVideoEnv
+import com.racewall.android.video.VideoEnv
+import com.racewall.android.video.VideoHub
+import com.racewall.android.widgets.videoHub
+import com.racewall.f1tv.F1Tv
 import android.app.Application
 import android.content.pm.PackageManager
 import android.net.ConnectivityManager
@@ -78,6 +84,19 @@ class CoreViewModel(app: Application) : AndroidViewModel(app), AppActions {
     /** Whether the system bars are hidden. */
     val fullscreen = MutableStateFlow(false)
 
+    /** The F1 TV players' coordination. */
+    val hub = VideoHub({ core.ui.value.session?.info?.key }, { core.frame.value.clock.time }).also { videoHub = it }
+
+    fun setVideoOffset(contentId: Long, ms: Double) {
+        val s = _settings.value
+        setSettings(s.copy(videoOffsets = s.videoOffsets + (contentId.toString() to ms)))
+    }
+
+    suspend fun videoPlay(contentId: Long, channelId: Long?): F1Tv.PlayInfo {
+        val token = account.current() ?: throw java.io.IOException("Sign in with your F1 account (Settings) to watch F1 TV.")
+        return F1Tv.play(contentId, channelId, token)
+    }
+
     init {
         Notify.channels(app)
         core.setOrder(_settings.value.sourceOrder)
@@ -153,7 +172,11 @@ class CoreViewModel(app: Application) : AndroidViewModel(app), AppActions {
         Notify.alert(getApplication(), text, "${info.meeting}, ${info.name}")
     }
 
-    override fun goLive() = core.goLive(account.current())
+    /** Jumps to the live moment: the leading player goes to the live edge, and the clock follows it. */
+    override fun goLive() {
+        val lead = if (hub.driving) hub.leader() else null
+        if (lead != null && lead.live) lead.currentTime = lead.seekRange().endInclusive else core.goLive(account.current())
+    }
 
     override fun syncDelay() {
         val ms = core.syncDelay()
@@ -179,9 +202,16 @@ class CoreViewModel(app: Application) : AndroidViewModel(app), AppActions {
         core.subscribe(topics)
     }
 
-    override fun toggle() = core.toggle()
-    override fun seek(t: Double) = core.seek(t)
-    override fun seekBy(ms: Double) = core.seekBy(ms)
+    // While an F1 TV player drives the clock, play, pause and seek act on the video.
+    override fun toggle() {
+        if (!hub.control(VideoHub.Command.Toggle)) core.toggle()
+    }
+    override fun seek(t: Double) {
+        if (!hub.control(VideoHub.Command.Seek(t))) core.seek(t)
+    }
+    override fun seekBy(ms: Double) {
+        if (!hub.control(VideoHub.Command.SeekBy(ms))) core.seekBy(ms)
+    }
     override fun setSpeed(speed: Double) = core.setSpeed(speed)
     override suspend fun listSeason(year: Int): List<ArchiveMeeting> = core.listSeason(year)
     override suspend fun replay(path: String) {
@@ -258,9 +288,26 @@ class MainActivity : ComponentActivity() {
                 bars.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
                 if (fullscreen) bars.hide(WindowInsetsCompat.Type.systemBars()) else bars.show(WindowInsetsCompat.Type.systemBars())
             }
+            val env = VideoEnv(
+                hub = model.hub,
+                session = ui.session,
+                frame = frame,
+                token = { model.account.current() },
+                videosForSession = { F1Tv.videosForSession(it) },
+                liveVideos = { F1Tv.liveVideos() },
+                details = { F1Tv.videoDetails(it) },
+                play = { id, ch -> model.videoPlay(id, ch) },
+                offsets = settings.videoOffsets,
+                setOffset = model::setVideoOffset,
+                clockPlay = { model.core.play() },
+                clockPause = { model.core.pause() },
+                clockSeek = { model.core.seek(it) },
+            )
             RaceWallTheme {
-                Box(Modifier.fillMaxSize().background(Rw.bg).safeDrawingPadding()) {
-                    RaceWallApp(Screen(frame, ui, model.core.mode(), settings, layouts, account), model)
+                CompositionLocalProvider(LocalVideoEnv provides env) {
+                    Box(Modifier.fillMaxSize().background(Rw.bg).safeDrawingPadding()) {
+                        RaceWallApp(Screen(frame, ui, model.core.mode(), settings, layouts, account), model, videoDriving = model.hub.driving)
+                    }
                 }
             }
         }

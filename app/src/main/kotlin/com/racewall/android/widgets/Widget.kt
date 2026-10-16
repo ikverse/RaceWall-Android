@@ -38,6 +38,9 @@ class Values(private val fields: List<Field>, private val raw: Map<String, JsonE
 
     fun num(key: String): Double = prim(key)?.doubleOrNull ?: (field(key) as? Field.Number)?.default ?: 0.0
 
+    /** A number kept with the panel but not offered in its settings, such as a player's volume. */
+    fun numOr(key: String, default: Double): Double = prim(key)?.doubleOrNull ?: default
+
     /** The value as stored, for the settings popover. */
     fun json(key: String): JsonElement = raw?.get(key) ?: when (val f = field(key)) {
         is Field.Toggle -> JsonPrimitive(f.default)
@@ -59,6 +62,8 @@ class WidgetScope(
     val range: (topic: String, from: Double, to: Double, filter: List<String>?) -> Any?,
     /** Saves one of the panel's own settings, as the track map does when it is turned. */
     val setSetting: (key: String, value: JsonElement) -> Unit,
+    /** The panel's id, for widgets that keep state per panel, such as the F1 TV players. */
+    val panelId: String = "",
 )
 
 /**
