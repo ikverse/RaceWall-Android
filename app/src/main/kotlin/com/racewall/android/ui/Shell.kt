@@ -78,6 +78,9 @@ interface AppActions : TransportActions {
     fun range(topic: String, from: Double, to: Double, filter: List<String>?): Any? = null
     fun toggleFullscreen() {}
     fun leaveLive() {}
+    fun checkForUpdates() {}
+    fun downloadUpdate() {}
+    fun installUpdate() {}
 }
 
 /** Everything the window draws from. */
@@ -88,6 +91,7 @@ data class Screen(
     val settings: Settings = Settings(),
     val layouts: Layouts = defaultLayouts(),
     val account: AccountStatus = AccountStatus(),
+    val update: com.racewall.android.update.UpdateStatus = com.racewall.android.update.UpdateStatus(),
 )
 
 /** Adds a widget to the active layout in the first free spot. Returns a problem, or "" when added. */
@@ -311,6 +315,16 @@ private fun SettingsSections(screen: Screen, actions: AppActions, signingIn: Boo
     Option("Red flag", "While following a live session") { Switch(s.notifyRed, "Red flag") { set(s.copy(notifyRed = it)) } }
     Option("Safety car", "Safety car and virtual safety car") { Switch(s.notifySafetyCar, "Safety car") { set(s.copy(notifySafetyCar = it)) } }
 
-    Section("About")
-    Option("RaceWall ${BuildConfig.VERSION_NAME}", "Updates come from the RaceWall releases on GitHub.") {}
+    Section("Updates")
+    Option("Check for updates", "A minute after start. RaceWall asks before downloading, and again before installing.") { Switch(s.autoUpdate, "Check for updates") { set(s.copy(autoUpdate = it)) } }
+    val u = screen.update
+    Option("RaceWall ${BuildConfig.VERSION_NAME}", "", warn = if (u.state == "error") u.message else "") {
+        val busy = u.state == "checking" || u.state == "downloading"
+        when (u.state) {
+            "available" -> RwButton(onClick = actions::downloadUpdate, on = true, label = "Download") { c -> BasicText("Download ${u.version}", style = Rw.text(13f, c)) }
+            "ready" -> RwButton(onClick = actions::installUpdate, on = true, label = "Install") { c -> BasicText("Install", style = Rw.text(13f, c)) }
+            else -> RwButton(onClick = actions::checkForUpdates, enabled = !busy, label = "Check now") { c -> BasicText(if (busy) "Checking…" else "Check now", style = Rw.text(13f, c)) }
+        }
+    }
+    if (u.state != "error") BasicText(u.message.ifEmpty { "Updates come from the RaceWall releases on GitHub." }, style = Rw.text(11f, Rw.t3), modifier = androidx.compose.ui.Modifier.padding(start = 16.dp, end = 16.dp))
 }

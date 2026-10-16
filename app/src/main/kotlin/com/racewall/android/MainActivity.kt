@@ -7,6 +7,7 @@ import com.racewall.android.video.VideoEnv
 import com.racewall.android.video.VideoHub
 import com.racewall.android.widgets.videoHub
 import com.racewall.f1tv.F1Tv
+import com.racewall.android.update.Updater
 import android.app.Application
 import android.content.pm.PackageManager
 import android.net.ConnectivityManager
@@ -84,6 +85,8 @@ class CoreViewModel(app: Application) : AndroidViewModel(app), AppActions {
     /** Whether the system bars are hidden. */
     val fullscreen = MutableStateFlow(false)
 
+    val updater = Updater(BuildConfig.VERSION_NAME, File(app.cacheDir, "updates"))
+
     /** The F1 TV players' coordination. */
     val hub = VideoHub({ core.ui.value.session?.info?.key }, { core.frame.value.clock.time }).also { videoHub = it }
 
@@ -111,6 +114,11 @@ class CoreViewModel(app: Application) : AndroidViewModel(app), AppActions {
                 scheduleTick()
                 delay(30_000)
             }
+        }
+        // A minute after start, if wanted, as the desktop does; never in a debug build.
+        viewModelScope.launch {
+            delay(60_000)
+            if (_settings.value.autoUpdate && !BuildConfig.DEBUG) updater.check()
         }
         // Keep the live service running exactly while live timing is followed.
         viewModelScope.launch {
@@ -258,6 +266,16 @@ class CoreViewModel(app: Application) : AndroidViewModel(app), AppActions {
 
     override fun signOut() = account.signOut()
 
+    override fun checkForUpdates() {
+        viewModelScope.launch { updater.check() }
+    }
+
+    override fun downloadUpdate() {
+        viewModelScope.launch { updater.download() }
+    }
+
+    override fun installUpdate() = updater.install(getApplication())
+
     override fun onCleared() = core.stop()
 }
 
@@ -278,6 +296,7 @@ class MainActivity : ComponentActivity() {
             val settings by model.settings.collectAsStateWithLifecycle()
             val layouts by model.layouts.collectAsStateWithLifecycle()
             val fullscreen by model.fullscreen.collectAsStateWithLifecycle()
+            val update by model.updater.status.collectAsStateWithLifecycle()
             // The screen stays on while a session plays, as a TV would.
             LaunchedEffect(frame.clock.playing) {
                 if (frame.clock.playing) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -306,7 +325,7 @@ class MainActivity : ComponentActivity() {
             RaceWallTheme {
                 CompositionLocalProvider(LocalVideoEnv provides env) {
                     Box(Modifier.fillMaxSize().background(Rw.bg).safeDrawingPadding()) {
-                        RaceWallApp(Screen(frame, ui, model.core.mode(), settings, layouts, account), model, videoDriving = model.hub.driving)
+                        RaceWallApp(Screen(frame, ui, model.core.mode(), settings, layouts, account, update), model, videoDriving = model.hub.driving)
                     }
                 }
             }

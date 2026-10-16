@@ -5,6 +5,28 @@ plugins {
     alias(libs.plugins.roborazzi)
 }
 
+// One place decides the version; the code is worked out from it so the two never disagree.
+val appVersionName = "0.1.0"
+val appVersionCode = appVersionName.split(".").let { (major, minor, patch) -> major.toInt() * 10_000 + minor.toInt() * 100 + patch.toInt() }
+
+/** What `local.properties` holds. Git ignores that file: it is where this machine's secrets live. */
+val localProperties: Map<String, String> = rootProject.file("local.properties")
+    .takeIf { it.exists() }
+    ?.readLines()
+    ?.mapNotNull { line ->
+        val text = line.trim()
+        if (text.startsWith("#") || "=" !in text) null else text.substringBefore("=").trim() to text.substringAfter("=").trim()
+    }
+    ?.toMap()
+    .orEmpty()
+
+fun buildSetting(name: String): String? = (localProperties[name] ?: System.getenv(name))?.takeIf(String::isNotBlank)
+
+/** The key releases are signed with. Android refuses an update signed by a different key. */
+val releaseKeystore = buildSetting("RACEWALL_KEYSTORE_FILE")?.let(rootProject::file)?.takeIf { it.exists() }
+val releaseKeystorePassword = buildSetting("RACEWALL_KEYSTORE_PASSWORD")
+val releaseKeyAlias = buildSetting("RACEWALL_KEY_ALIAS")
+
 android {
     namespace = "com.racewall.android"
     compileSdk = 37
@@ -13,13 +35,27 @@ android {
         applicationId = "com.racewall.android"
         minSdk = 29
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = appVersionCode
+        versionName = appVersionName
+    }
+
+    signingConfigs {
+        if (releaseKeystore != null && releaseKeystorePassword != null && releaseKeyAlias != null) {
+            create("release") {
+                storeFile = releaseKeystore
+                storePassword = releaseKeystorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = buildSetting("RACEWALL_KEY_PASSWORD") ?: releaseKeystorePassword
+            }
+        }
     }
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            signingConfig = signingConfigs.findByName("release")
         }
         debug {
             versionNameSuffix = "-debug"
