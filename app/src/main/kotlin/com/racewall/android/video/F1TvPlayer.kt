@@ -69,7 +69,10 @@ class F1TvLicense(
 /** One ExoPlayer for an F1 TV stream: DASH, with Widevine when F1 TV names a licence server. */
 @OptIn(UnstableApi::class)
 class F1TvPlayer(context: Context, private val token: () -> String?) {
-    val exo: ExoPlayer = ExoPlayer.Builder(context.applicationContext).build()
+    val exo: ExoPlayer = ExoPlayer.Builder(context.applicationContext).build().apply {
+        // Debug builds log what the player does, to see where a stream stops.
+        if (com.racewall.android.BuildConfig.DEBUG) addAnalyticsListener(androidx.media3.exoplayer.util.EventLogger("RaceWallVideo"))
+    }
     var loaded = false
         private set
 

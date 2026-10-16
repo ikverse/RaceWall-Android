@@ -15,13 +15,20 @@ class Timeline<S, D>(
     private val keyframeEvery: Int = 200,
     /** A full copy of a state. */
     private val clone: (S) -> S = { @Suppress("UNCHECKED_CAST") (deepClone(it) as S) },
+    /**
+     * How a keyframe is kept, and how a fresh state comes back from it. By default a copy; a
+     * timeline of feed JSON can keep compact text instead, which takes far less memory.
+     */
+    private val pack: (S) -> Any? = clone,
+    @Suppress("UNCHECKED_CAST")
+    private val unpack: (Any?) -> S = { clone(it as S) },
 ) {
     private class Frame<S>(val index: Int, val state: S)
 
     private val times = ArrayList<Double>()
     private val deltas = ArrayList<D>()
-    /** state after applying deltas[0..index] */
-    private val keyframes = ArrayList<Frame<S>>()
+    /** packed state after applying deltas[0..index] */
+    private val keyframes = ArrayList<Frame<Any?>>()
     private var head: S = initial()
     private var cache: Frame<S>? = null
 
@@ -42,7 +49,7 @@ class Timeline<S, D>(
         deltas.add(delta)
         head = apply(head, delta)
         val index = times.size - 1
-        if (index % keyframeEvery == 0) keyframes.add(Frame(index, clone(head)))
+        if (index % keyframeEvery == 0) keyframes.add(Frame(index, pack(head)))
     }
 
     /** Index of the last change at or before `t`, or -1. */
@@ -81,7 +88,7 @@ class Timeline<S, D>(
 
         val nearest = keyframes[index / keyframeEvery]
         val c = cache
-        val from = if (c != null && c.index < index && c.index >= nearest.index) c else Frame(nearest.index, clone(nearest.state))
+        val from = if (c != null && c.index < index && c.index >= nearest.index) c else Frame(nearest.index, unpack(nearest.state))
         var state = from.state
         for (i in from.index + 1..index) state = apply(state, deltas[i])
         cache = Frame(index, state)
