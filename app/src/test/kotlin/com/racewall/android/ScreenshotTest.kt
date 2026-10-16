@@ -6,7 +6,7 @@ import com.github.takahirom.roborazzi.captureRoboImage
 import com.racewall.android.ui.RaceWallApp
 import com.racewall.android.ui.RaceWallTheme
 import com.racewall.android.ui.TimingSettings
-import com.racewall.android.ui.TransportActions
+import com.racewall.android.ui.AppActions
 import com.racewall.archive.ArchiveMeeting
 import org.junit.Rule
 import org.junit.Test
@@ -25,7 +25,9 @@ class ScreenshotTest {
     @get:Rule
     val compose = createComposeRule()
 
-    private val none = object : TransportActions {
+    private val none = object : AppActions {
+        override suspend fun signedIn(token: String) {}
+        override fun signOut() {}
         override fun toggle() {}
         override fun seek(t: Double) {}
         override fun setSpeed(speed: Double) {}

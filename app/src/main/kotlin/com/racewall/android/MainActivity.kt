@@ -19,15 +19,18 @@ import com.racewall.android.ui.RaceWallApp
 import com.racewall.android.ui.RaceWallTheme
 import com.racewall.android.ui.Rw
 import com.racewall.android.ui.TimingSettings
-import com.racewall.android.ui.TransportActions
+import com.racewall.android.account.Account
+import com.racewall.android.ui.AppActions
 import com.racewall.archive.Archive
 import com.racewall.archive.ArchiveMeeting
 import kotlinx.coroutines.launch
 import java.io.File
 
 /** Holds the core for as long as the app runs, across rotation and window changes. */
-class CoreViewModel(app: Application) : AndroidViewModel(app), TransportActions {
-    val core = Core(Archive(cacheDir = File(app.filesDir, "archive")), viewModelScope)
+class CoreViewModel(app: Application) : AndroidViewModel(app), AppActions {
+    val account = Account(app.filesDir).apply { load() }
+    // The archive answers 401 without an F1 TV sign-in, so every archive request carries the token.
+    val core = Core(Archive(cacheDir = File(app.filesDir, "archive"), token = { account.current() }), viewModelScope)
 
     init {
         core.start()
@@ -44,6 +47,12 @@ class CoreViewModel(app: Application) : AndroidViewModel(app), TransportActions 
         core.play()
     }
 
+    override suspend fun signedIn(token: String) {
+        if (account.accept(token).signedIn) core.afterSignIn()
+    }
+
+    override fun signOut() = account.signOut()
+
     override fun onCleared() = core.stop()
 }
 
@@ -56,9 +65,10 @@ class MainActivity : ComponentActivity() {
         setContent {
             val frame by model.core.frame.collectAsStateWithLifecycle()
             val ui by model.core.ui.collectAsStateWithLifecycle()
+            val account by model.account.status.collectAsStateWithLifecycle()
             RaceWallTheme {
                 Box(Modifier.fillMaxSize().background(Rw.bg).safeDrawingPadding()) {
-                    RaceWallApp(frame, ui, model.core.mode(), TimingSettings(), model.core::focusDriver, model)
+                    RaceWallApp(frame, ui, model.core.mode(), TimingSettings(), model.core::focusDriver, model, account)
                 }
             }
         }

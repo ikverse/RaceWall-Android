@@ -21,4 +21,4 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "RaceWall"
-include(":core:bus", ":core:clock", ":core:topics", ":data:archive", ":app")
+include(":core:bus", ":core:clock", ":core:topics", ":data:archive", ":data:account", ":app")
