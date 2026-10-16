@@ -100,6 +100,12 @@ class CoreViewModel(app: Application) : AndroidViewModel(app), AppActions {
         return F1Tv.play(contentId, channelId, token)
     }
 
+    // Declared before init: the schedule loop below runs straight away and uses them.
+    private val announced = HashSet<String>()
+
+    /** Sessions live timing already took over for, so leaving one for a replay is not undone. */
+    private val takenOver = HashSet<String>()
+
     init {
         Notify.channels(app)
         core.setOrder(_settings.value.sourceOrder)
@@ -135,11 +141,6 @@ class CoreViewModel(app: Application) : AndroidViewModel(app), AppActions {
             override fun onAvailable(network: Network) = core.networkChanged()
         })
     }
-
-    private val announced = HashSet<String>()
-
-    /** Sessions live timing already took over for, so leaving one for a replay is not undone. */
-    private val takenOver = HashSet<String>()
 
     private fun scheduleTick() {
         val s = _settings.value
