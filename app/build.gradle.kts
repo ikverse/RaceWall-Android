@@ -56,6 +56,7 @@ dependencies {
     implementation(project(":data:openf1"))
     implementation(project(":data:jolpica"))
     implementation(project(":analysis"))
+    implementation(project(":data:live"))
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.okhttp)
     implementation(libs.media3.exoplayer)

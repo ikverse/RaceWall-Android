@@ -77,7 +77,7 @@ interface AppActions : TransportActions {
     fun showLastResult() {}
     fun range(topic: String, from: Double, to: Double, filter: List<String>?): Any? = null
     fun toggleFullscreen() {}
-    fun syncDelay() {}
+    fun leaveLive() {}
 }
 
 /** Everything the window draws from. */
@@ -262,6 +262,13 @@ private fun commands(
         Command("Play or pause", "Space") { actions.toggle() },
         Command("Back 30 seconds", "Shift ←") { actions.seekBy(-30_000.0) },
         Command("Forward 30 seconds", "Shift →") { actions.seekBy(30_000.0) },
+        Command(if (screen.mode == Mode.LIVE) "Go live" else "Connect to live timing", "Live") { actions.goLive() },
+    )
+    if (screen.mode == Mode.LIVE) list += listOf(
+        Command("Sync the broadcast delay", "Press as the leader crosses the line") { actions.syncDelay() },
+        Command("Leave live timing", "Live") { actions.leaveLive() },
+    )
+    list += listOf(
         Command("Sign in with your F1 account", "Account", openSettings),
         Command("Pick a session to replay", "Replay", openPicker),
         Command("Show the last result", "Replay") { actions.showLastResult() },

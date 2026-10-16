@@ -1,6 +1,20 @@
 package com.racewall.android
 
+import android.Manifest
 import android.app.Application
+import android.content.pm.PackageManager
+import android.net.ConnectivityManager
+import android.net.Network
+import android.os.Build
+import androidx.activity.result.contract.ActivityResultContracts
+import com.racewall.android.live.LiveService
+import com.racewall.android.live.Notify
+import com.racewall.live.LiveScheduler
+import com.racewall.topics.Schedule
+import com.racewall.topics.Topic
+import com.racewall.topics.TrackFlag
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
@@ -47,7 +61,12 @@ class CoreViewModel(app: Application) : AndroidViewModel(app), AppActions {
     val account = Account(app.filesDir).apply { load() }
 
     // The archive answers 401 without an F1 TV sign-in, so every archive request carries the token.
-    val core = Core(Archive(cacheDir = File(app.filesDir, "archive"), token = { account.current() }), viewModelScope)
+    val core = Core(
+        Archive(cacheDir = File(app.filesDir, "archive"), token = { account.current() }),
+        viewModelScope,
+        recordings = File(app.filesDir, "recordings"),
+        onFlag = { flag, info -> flagNotice(flag, info) },
+    )
 
     private val settingsStore = JsonStore(File(app.filesDir, "settings.json"))
     private val layoutsStore = JsonStore(File(app.filesDir, "layouts.json"))
@@ -60,12 +79,98 @@ class CoreViewModel(app: Application) : AndroidViewModel(app), AppActions {
     val fullscreen = MutableStateFlow(false)
 
     init {
+        Notify.channels(app)
         core.setOrder(_settings.value.sourceOrder)
+        core.setDelay(_settings.value.delay())
         subscribe()
         core.start()
         // As the desktop does at start: the most recent race or sprint, at its end.
         viewModelScope.launch { core.loadLastResult() }
+        // Every 30 seconds: go live when a session is on, go back afterwards, and announce sessions.
+        viewModelScope.launch {
+            while (true) {
+                scheduleTick()
+                delay(30_000)
+            }
+        }
+        // Keep the live service running exactly while live timing is followed.
+        viewModelScope.launch {
+            var running = false
+            core.ui.collect { ui ->
+                val live = ui.session?.live != null
+                if (live && !running) LiveService.start(app, ui.session?.info?.meeting?.ifEmpty { null } ?: "Live timing")
+                if (!live && running) LiveService.stop(app)
+                running = live
+            }
+        }
+        // A network that comes back, or a switch from Wi-Fi to mobile data, reconnects live timing at once.
+        app.getSystemService(ConnectivityManager::class.java)?.registerDefaultNetworkCallback(object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) = core.networkChanged()
+        })
     }
+
+    private val announced = HashSet<String>()
+
+    /** Sessions live timing already took over for, so leaving one for a replay is not undone. */
+    private val takenOver = HashSet<String>()
+
+    private fun scheduleTick() {
+        val s = _settings.value
+        val schedule = core.bus.typed<Schedule>(Topic.SCHEDULE, 0.0) ?: emptyList()
+        val now = System.currentTimeMillis()
+        if (s.notifySoon) for (soon in LiveScheduler.startingSoon(schedule, now, announced)) {
+            announced.add(LiveScheduler.key(soon))
+            val at = java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT).format(java.util.Date(soon.start!!))
+            Notify.alert(getApplication(), "${soon.name} starts soon", "${soon.meeting}, $at")
+        }
+        val on = LiveScheduler.sessionNow(schedule, now)
+        core.setOnNow(on?.let { OnNow(it.meeting, it.name) })
+        // Going live by hand counts too: leaving afterwards is the user's choice.
+        if (on != null && core.isLive()) takenOver.add(LiveScheduler.key(on))
+        if (s.autoLive && LiveScheduler.shouldTakeOver(on, core.isLive(), takenOver)) {
+            takenOver.add(LiveScheduler.key(on!!))
+            core.goLive(account.current())
+        }
+        if (core.isLive()) {
+            val ended = core.liveEnded()
+            val quiet = now - core.lastMessage() > 20 * 60_000
+            if ((ended != null && now - ended > 15 * 60_000) || (on == null && quiet)) {
+                core.stopLive()
+                viewModelScope.launch { core.loadLastResult() }
+            }
+        }
+    }
+
+    /** The red flag and safety car notifications, while following a live session. */
+    private fun flagNotice(flag: TrackFlag, info: com.racewall.topics.SessionInfo) {
+        val s = _settings.value
+        val text = when (flag) {
+            TrackFlag.RED -> if (s.notifyRed) "Red flag" else null
+            TrackFlag.SC -> if (s.notifySafetyCar) "Safety car" else null
+            TrackFlag.VSC -> if (s.notifySafetyCar) "Virtual safety car" else null
+            else -> null
+        } ?: return
+        Notify.alert(getApplication(), text, "${info.meeting}, ${info.name}")
+    }
+
+    override fun goLive() = core.goLive(account.current())
+
+    override fun syncDelay() {
+        val ms = core.syncDelay()
+        if (ms == null) core.say("No line crossing yet to sync to. Try again just after the leader crosses the line.")
+        else {
+            core.say("Delay set to ${Math.round(ms / 1000.0)} s")
+            val s = _settings.value
+            setSettings(s.copy(delays = s.delays + (s.viewing to ms)))
+        }
+    }
+
+    override fun leaveLive() {
+        core.stopLive()
+        viewModelScope.launch { core.loadLastResult() }
+    }
+
+    override suspend fun listRecordings(): List<Recording> = withContext(Dispatchers.IO) { core.listRecordings() }
 
     /** Asks the core for exactly what the visible widgets read. */
     private fun subscribe() {
@@ -99,9 +204,10 @@ class CoreViewModel(app: Application) : AndroidViewModel(app), AppActions {
     }
 
     override fun setSettings(settings: Settings) {
-        val order = _settings.value.sourceOrder
+        val old = _settings.value
         _settings.value = settings
-        if (settings.sourceOrder != order) core.setOrder(settings.sourceOrder)
+        if (settings.sourceOrder != old.sourceOrder) core.setOrder(settings.sourceOrder)
+        if (settings.delay() != old.delay()) core.setDelay(settings.delay())
         viewModelScope.launch(Dispatchers.IO) { settingsStore.write(settings) }
     }
 
@@ -110,7 +216,14 @@ class CoreViewModel(app: Application) : AndroidViewModel(app), AppActions {
     }
 
     override suspend fun signedIn(token: String) {
-        if (account.accept(token).signedIn) core.afterSignIn()
+        if (account.accept(token).signedIn) {
+            core.afterSignIn()
+            // A sign-in during live timing reconnects with the full feed.
+            if (core.isLive()) {
+                core.stopLive()
+                core.goLive(account.current())
+            }
+        }
     }
 
     override fun signOut() = account.signOut()
@@ -124,6 +237,10 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        // Notifications for sessions starting soon, red flags and the safety car need Android's yes.
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            registerForActivityResult(ActivityResultContracts.RequestPermission()) {}.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
         setContent {
             val frame by model.core.frame.collectAsStateWithLifecycle()
             val ui by model.core.ui.collectAsStateWithLifecycle()
