@@ -144,6 +144,19 @@ class Archive(
         SessionFiles(infoText, streams)
     }
 
+    /**
+     * Downloads the compressed car position and telemetry feeds: about 15 MB for a race, so only
+     * when a widget needs them. Cached like the other files once the session is complete.
+     */
+    @Suppress("UNCHECKED_CAST")
+    suspend fun fetchCarFiles(path: String): CarFiles = coroutineScope {
+        val dir = if (path.endsWith("/")) path else "$path/"
+        val infoText = download("${dir}SessionInfo.json", false)
+        val info = infoText?.let { FeedJson.parse(stripBom(it)) as? Map<String, Any?> }
+        val complete = (info?.get("ArchiveStatus") as? Map<String, Any?>)?.get("Status") == "Complete"
+        CAR_STREAMS.map { name -> async { name to (download("$dir$name.jsonStream", complete) ?: "") } }.awaitAll().toMap()
+    }
+
     private fun text(v: Any?): String = if (v == null) "" else jsString(v)
 
     private fun num(v: Any?): Int = when (v) {
