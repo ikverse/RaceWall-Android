@@ -69,8 +69,6 @@ class CanvasActions(
     val setEdit: (Boolean) -> Unit,
     val onFocus: (String) -> Unit,
     val range: (String, Double, Double, List<String>?) -> Any?,
-    /** Draws the F1 TV player, which is part of the app rather than a widget. */
-    val video: @Composable (Panel, (String) -> Unit) -> Unit = { _, _ -> },
 )
 
 /**
@@ -96,8 +94,6 @@ fun PanelCanvas(
     var openSettings by remember { mutableStateOf<String?>(null) }
     // Arranging panels hides the gear, so its popover goes too, and stays shut afterwards.
     LaunchedEffect(edit) { if (edit) openSettings = null }
-    /** The F1 TV player's header text, which it reports as it plays. */
-    val videoMetas = remember { androidx.compose.runtime.mutableStateMapOf<String, String>() }
 
     BoxWithConstraints(
         modifier
@@ -128,7 +124,7 @@ fun PanelCanvas(
 
         for (panel in layout.panels) {
             val spec = widget(panel.widget)
-            val title = spec?.title ?: if (panel.widget == com.racewall.android.state.F1TV_WIDGET) "F1 TV" else panel.widget
+            val title = spec?.title ?: panel.widget
             val collapsed = panel.collapsed == true
             // The widget's scope and header text are worked out before the header is drawn.
             val scope = spec?.let {
@@ -140,12 +136,13 @@ fun PanelCanvas(
                     onFocus = actions.onFocus,
                     range = actions.range,
                     setSetting = { key, value -> setPanelSetting(latest, panel.id, key, value, actions.setLayouts) },
+                    panelId = panel.id,
                 )
             }
             val meta = when {
                 collapsed -> ""
                 spec != null && scope != null -> runCatching { spec.meta(scope) }.getOrDefault("")
-                else -> videoMetas[panel.id] ?: ""
+                else -> ""
             }
             Box(
                 Modifier
@@ -181,7 +178,6 @@ fun PanelCanvas(
                 ) {
                     when {
                         spec != null && scope != null -> spec.content(scope)
-                        panel.widget == com.racewall.android.state.F1TV_WIDGET -> actions.video(panel) { videoMetas[panel.id] = it }
                         else -> BasicText("The widget \"${panel.widget}\" is not installed or is turned off.", style = Rw.text(13f, Rw.t3), modifier = Modifier.padding(12.dp))
                     }
                 }

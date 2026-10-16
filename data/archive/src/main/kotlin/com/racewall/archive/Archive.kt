@@ -48,12 +48,15 @@ fun interface Fetcher {
 /** The archive turned the request down: it needs an F1 TV sign-in. */
 class ArchiveSignInException : IOException("F1's timing archive now needs an F1 TV sign-in. Sign in under Settings → F1 account.")
 
-/** Fetches with OkHttp, always closing the response so its connection is released. */
-class OkHttpFetcher(private val client: OkHttpClient = OkHttpClient()) : Fetcher {
+/**
+ * Fetches with OkHttp, always closing the response so its connection is released. With
+ * `answerErrors` the body of a failed request is kept too, for services that explain a refusal.
+ */
+class OkHttpFetcher(private val client: OkHttpClient = OkHttpClient(), private val answerErrors: Boolean = false) : Fetcher {
     override suspend fun get(url: String, headers: Map<String, String>): HttpResult = withContext(Dispatchers.IO) {
         val request = Request.Builder().url(url).apply { for ((k, v) in headers) header(k, v) }.build()
         client.newCall(request).execute().use { res ->
-            HttpResult(res.code, if (res.isSuccessful) res.body.string() else null)
+            HttpResult(res.code, if (res.isSuccessful || answerErrors) res.body.string() else null)
         }
     }
 }

@@ -37,8 +37,25 @@ val TimingWidget = WidgetSpec(
     )
 }
 
+/** The players' coordination, for the F1 TV panels' header text. Set by the app. */
+var videoHub: com.racewall.android.video.VideoHub? = null
+
+/**
+ * The F1 TV player. Part of the app rather than a plugin, as on the desktop, because it needs the
+ * sign-in and protected-video playback; it is listed with the widgets all the same.
+ */
+val F1TvWidget = WidgetSpec(
+    id = F1TV_WIDGET,
+    title = "F1 TV",
+    min = 10 to 7,
+    size = 26 to 18,
+    reads = setOf(Topic.SESSION_INFO, Topic.DRIVERS_LIST),
+    meta = { s -> videoHub?.metas?.get(s.panelId) ?: "" },
+) { s -> com.racewall.android.video.VideoPanel(s) }
+
 /** Every built-in widget, in the order the Add widget menu lists them. */
 val WIDGETS: List<WidgetSpec> = listOf(
+    F1TvWidget,
     TimingWidget,
     TrackMapWidget,
     RaceControlWidget,

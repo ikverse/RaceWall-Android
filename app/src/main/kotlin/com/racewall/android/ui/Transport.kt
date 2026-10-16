@@ -93,6 +93,8 @@ fun Transport(
     setPicker: (Boolean) -> Unit,
     chromeAlpha: Float = 1f,
     modifier: Modifier = Modifier,
+    /** True while an F1 TV player drives the session clock. */
+    videoDriving: Boolean = false,
 ) {
     val info = frame.info
     val clock = frame.clock
@@ -153,8 +155,11 @@ fun Transport(
                         BasicText("Go live${if (behind > 0) " ($behind s behind)" else ""}", style = Rw.text(12f, c), maxLines = 1)
                     }
                 }
-                BasicText("Delay ${Math.round(live.delayMs / 1000.0)} s", style = Rw.text(12f, Rw.t2), maxLines = 1)
-                RwButton(onClick = actions::syncDelay, label = "Sync") { c -> BasicText("Sync", style = Rw.text(12f, c)) }
+                if (videoDriving) BasicText("Synced to video", style = Rw.text(12f, Rw.t2), maxLines = 1)
+                else {
+                    BasicText("Delay ${Math.round(live.delayMs / 1000.0)} s", style = Rw.text(12f, Rw.t2), maxLines = 1)
+                    RwButton(onClick = actions::syncDelay, label = "Sync") { c -> BasicText("Sync", style = Rw.text(12f, c)) }
+                }
             } else {
                 RwSelect(
                     value = clock.speed,
