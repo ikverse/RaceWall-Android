@@ -42,6 +42,8 @@ object Rw {
 
     /** Selawik: Microsoft's open stand-in for Segoe UI, with the same metrics and fixed-width digits. */
     val ui = FontFamily(
+        // Light only for the next-session countdown, as the desktop's `font-weight: 300` there.
+        Font(R.font.selawik_light, FontWeight.Light),
         Font(R.font.selawik_regular, FontWeight.Normal),
         Font(R.font.selawik_semibold, FontWeight.SemiBold),
     )
