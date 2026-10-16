@@ -104,7 +104,9 @@ fun Transport(
     val onNow = ui.onNow
     val behind = if (live != null) maxOf(0, Math.round((clock.end - clock.time) / 1000).toInt()) else 0
 
-    Box(modifier.fillMaxWidth().height(34.dp).alpha(chromeAlpha)) {
+    androidx.compose.foundation.layout.BoxWithConstraints(modifier.fillMaxWidth().height(34.dp).alpha(chromeAlpha)) {
+        // An upright tablet has no room for everything: the sources go, and the clock takes only its width.
+        val narrow = maxWidth < 1000.dp
         Row(
             Modifier
                 .fillMaxWidth()
@@ -170,7 +172,7 @@ fun Transport(
             }
             val lap = Format.lapText(frame.status)
             val time = frame.utc?.let { "${Format.utcClock(it)} UTC" } ?: Format.elapsed(clock.time)
-            BasicText(if (lap.isNotEmpty()) "$lap · $time" else time, style = Rw.text(12f, Rw.t2), modifier = Modifier.widthIn(min = 170.dp), maxLines = 1)
+            BasicText(if (lap.isNotEmpty()) "$lap · $time" else time, style = Rw.text(12f, Rw.t2), modifier = Modifier.widthIn(min = if (narrow) 0.dp else 170.dp), maxLines = 1)
             if (flag != null) BasicText(flag.first, style = Rw.text(12f, flag.second), maxLines = 1)
             Spacer(Modifier.weight(1f, fill = true))
             when {
@@ -178,7 +180,7 @@ fun Transport(
                 ui.notice.isNotEmpty() -> BasicText(ui.notice, style = Rw.text(12f, Rw.t3), maxLines = 1)
                 ui.error.isNotEmpty() -> BasicText(ui.error, style = Rw.text(12f, Rw.red), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 420.dp))
             }
-            if (sourceText.isNotEmpty()) BasicText("Sources: $sourceText", style = Rw.text(12f, Rw.t3), maxLines = 1)
+            if (sourceText.isNotEmpty() && !narrow) BasicText("Sources: $sourceText", style = Rw.text(12f, Rw.t3), maxLines = 1)
         }
         if (pickerOpen) SessionPicker(actions, onNow?.let { "${it.meeting} · ${it.name}" }, live != null, onClose = { setPicker(false) })
     }
