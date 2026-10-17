@@ -55,6 +55,40 @@ class GridTest {
     }
 
     @Test
+    fun `resizing against a neighbour on the right still changes the height`() {
+        val panels = listOf(panel("a", 0, 0, 10, 10), panel("b", 10, 0, 10, 20))
+        assertEquals(Rect(0, 0, 10, 14), Grid.reach(Rect(0, 0, 10, 10), Rect(0, 0, 11, 14), panels, "a"))
+        assertEquals(Rect(0, 0, 10, 6), Grid.reach(Rect(0, 0, 10, 10), Rect(0, 0, 12, 6), panels, "a"))
+    }
+
+    @Test
+    fun `resizing against a neighbour below still changes the width`() {
+        val panels = listOf(panel("a", 0, 0, 10, 10), panel("b", 0, 10, 20, 10))
+        assertEquals(Rect(0, 0, 15, 10), Grid.reach(Rect(0, 0, 10, 10), Rect(0, 0, 15, 12), panels, "a"))
+    }
+
+    @Test
+    fun `moving slides along a neighbour's side`() {
+        val panels = listOf(panel("a", 0, 0, 10, 10), panel("b", 10, 0, 10, 20))
+        assertEquals(Rect(0, 5, 10, 10), Grid.reach(Rect(0, 0, 10, 10), Rect(2, 5, 10, 10), panels, "a"))
+    }
+
+    @Test
+    fun `a fast drag stops right against a neighbour`() {
+        val panels = listOf(panel("a", 0, 0, 10, 10), panel("b", 14, 0, 10, 10))
+        assertEquals(Rect(0, 0, 14, 10), Grid.reach(Rect(0, 0, 10, 10), Rect(0, 0, 20, 10), panels, "a"))
+        assertEquals(Rect(4, 0, 10, 10), Grid.reach(Rect(0, 0, 10, 10), Rect(9, 0, 10, 10), panels, "a"))
+    }
+
+    @Test
+    fun `a neighbour off the corner lets one side through`() {
+        val panels = listOf(panel("a", 0, 0, 10, 10), panel("b", 10, 10, 10, 10))
+        val r = Grid.reach(Rect(0, 0, 10, 10), Rect(0, 0, 13, 12), panels, "a")
+        assertTrue(r == Rect(0, 0, 13, 10) || r == Rect(0, 0, 10, 12))
+        assertTrue(Grid.fits(r, panels, "a"))
+    }
+
+    @Test
     fun `formats session time and the lap`() {
         assertEquals("01:04:09", Format.elapsed(3_849_003.0))
         assertEquals("Lap 21 / 52", Format.lapText(SessionStatus(SessionState.STARTED, TrackFlag.GREEN, 21, 52)))

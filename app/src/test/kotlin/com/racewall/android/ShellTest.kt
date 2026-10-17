@@ -50,6 +50,8 @@ class ShellTest {
     private var focus by mutableStateOf<String?>(null)
     private var toggles = 0
     private var seeks = mutableListOf<Double>()
+    private var saves = 0
+    private val previews = mutableListOf<Layouts>()
 
     private val actions = object : AppActions {
         override suspend fun signedIn(token: String) {}
@@ -65,6 +67,11 @@ class ShellTest {
         override suspend fun listSeason(year: Int): List<ArchiveMeeting> = BritishGp.meetings
         override suspend fun replay(path: String) {}
         override fun setLayouts(layouts: Layouts) {
+            saves++
+            this@ShellTest.layouts = layouts
+        }
+        override fun previewLayouts(layouts: Layouts) {
+            previews.add(layouts)
             this@ShellTest.layouts = layouts
         }
         override fun setSettings(settings: Settings) {
@@ -144,6 +151,54 @@ class ShellTest {
         val after = layouts.current().panels.first { it.id == "race-control-1" }
         assertNotEquals(before.x, after.x)
         compose.onNodeWithText("Done").assertExists()
+    }
+
+    /** The Race layout with only the weather panel, at 10,5 and 15 x 13, with room around it. */
+    private fun weatherAlone() = defaultLayouts().withPanels { list ->
+        list.filter { it.id == "weather-1" }.map { it.copy(x = 10, y = 5, w = 15, h = 13) }
+    }
+
+    /** A drag in many small steps, as a finger moves. */
+    private fun dragIn(tag: String, from: Offset, by: Offset, steps: Int = 40) {
+        compose.onNodeWithTag(tag).performTouchInput {
+            down(from)
+            repeat(steps) { moveBy(Offset(by.x / steps, by.y / steps)) }
+            up()
+        }
+        compose.waitForIdle()
+    }
+
+    @Test
+    fun `resizing by the corner grows the panel steadily, by the cells dragged, and saves once`() {
+        layouts = weatherAlone()
+        show()
+        compose.onNodeWithContentDescription("Edit layout").performClick()
+        saves = 0
+        // On this screen a cell is about 33 x 27; drag about 3 across and 2 down.
+        dragIn("resize-weather-1", Offset(16f, 16f), Offset(100f, 55f))
+        val after = layouts.current().panels.single()
+        assertEquals(15 + 3, after.w)
+        assertEquals(13 + 2, after.h)
+        // Never smaller on the way: the corner moving with the panel does not pull it back.
+        val sizes = previews.map { it.current().panels.single().let { p -> p.w to p.h } }
+        assertTrue(sizes.zipWithNext().all { (a, b) -> b.first >= a.first && b.second >= a.second }, "$sizes")
+        assertEquals(sizes.distinct(), sizes, "each preview is a new size")
+        assertEquals(1, saves)
+    }
+
+    @Test
+    fun `moving a panel by its header in edit mode follows the finger and saves once`() {
+        layouts = weatherAlone()
+        show()
+        compose.onNodeWithContentDescription("Edit layout").performClick()
+        saves = 0
+        dragIn("panel-weather-1", Offset(60f, 15f), Offset(-133f, 0f))
+        val after = layouts.current().panels.single()
+        assertEquals(10 - 4, after.x)
+        assertEquals(5, after.y)
+        val xs = previews.map { it.current().panels.single().x }
+        assertEquals(listOf(9, 8, 7, 6), xs)
+        assertEquals(1, saves)
     }
 
     @Test

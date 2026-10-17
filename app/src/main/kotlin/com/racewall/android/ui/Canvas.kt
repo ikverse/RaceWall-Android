@@ -35,7 +35,8 @@ import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
@@ -66,6 +67,8 @@ private const val HOLD_SLOP = 6f
 /** What a panel can ask of the window. */
 class CanvasActions(
     val setLayouts: (Layouts) -> Unit,
+    /** Shows a layout without saving it, while a panel is being moved or resized. */
+    val previewLayouts: (Layouts) -> Unit,
     val setEdit: (Boolean) -> Unit,
     val onFocus: (String) -> Unit,
     val range: (String, Double, Double, List<String>?) -> Any?,
@@ -91,6 +94,8 @@ fun PanelCanvas(
 ) {
     val layout = layouts.current()
     val latest by rememberUpdatedState(layouts)
+    /** The layout being shown while a panel is dragged, not yet saved. */
+    var dragged by remember { mutableStateOf<Layouts?>(null) }
     var openSettings by remember { mutableStateOf<String?>(null) }
     // Arranging panels hides the gear, so its popover goes too, and stays shut afterwards.
     LaunchedEffect(edit) { if (edit) openSettings = null }
@@ -113,13 +118,28 @@ fun PanelCanvas(
         val cwPx = with(density) { cw.toPx() }
         val chPx = with(density) { ch.toPx() }
 
-        /** Moves or resizes a panel while the finger is down; saved when it is let go. */
+        /**
+         * Moves or resizes a panel while the finger is down, as the desktop does: only shown, and
+         * only when its grid place changes. It is saved once, when the finger is let go.
+         */
         fun drag(panel: Panel, resize: Boolean, dx: Float, dy: Float, start: Rect) {
             val spec = widget(panel.widget)
             val min = spec?.min ?: (4 to 4)
-            val next = Grid.moved(start, (dx / cwPx).roundToInt(), (dy / chPx).roundToInt(), resize, min)
-            val current = latest.current().panels
-            if (Grid.fits(next, current, panel.id)) actions.setLayouts(latest.withPanels { list -> list.map { if (it.id == panel.id) it.at(next) else it } })
+            val wanted = Grid.moved(start, (dx / cwPx).roundToInt(), (dy / chPx).roundToInt(), resize, min)
+            val base = dragged ?: latest
+            val current = base.current().panels
+            val now = current.firstOrNull { it.id == panel.id }?.rect ?: return
+            // A side against a neighbour stops there; the other side still follows the finger.
+            val next = Grid.reach(now, wanted, current, panel.id)
+            if (next == now) return
+            val shown = base.withPanels { list -> list.map { if (it.id == panel.id) it.at(next) else it } }
+            dragged = shown
+            actions.previewLayouts(shown)
+        }
+
+        fun dragEnd() {
+            dragged?.let(actions.setLayouts)
+            dragged = null
         }
 
         for (panel in layout.panels) {
@@ -169,6 +189,7 @@ fun PanelCanvas(
                     onGear = { openSettings = if (openSettings == panel.id) null else panel.id },
                     onRemove = { actions.setLayouts(latest.withPanels { list -> list.filter { it.id != panel.id } }) },
                     onHeaderDrag = { dx, dy, start -> drag(panel, false, dx, dy, start) },
+                    onDragEnd = ::dragEnd,
                     onArm = {
                         // A collapsed panel opens to its full area, so it can be placed and resized.
                         if (collapsed) actions.setLayouts(latest.withPanels { list -> list.map { if (it.id == panel.id) it.copy(collapsed = null) else it } })
@@ -211,11 +232,13 @@ private fun PanelFrame(
     onHeaderDrag: (Float, Float, Rect) -> Unit,
     onArm: () -> Unit,
     onResize: (Float, Float, Rect) -> Unit,
+    onDragEnd: () -> Unit,
     body: @Composable () -> Unit,
 ) {
     val shape = RoundedCornerShape(6.dp)
     val editNow by rememberUpdatedState(edit)
     val panelNow by rememberUpdatedState(panel)
+    val header = remember { Place() }
     Column(
         Modifier
             .fillMaxWidth()
@@ -238,22 +261,26 @@ private fun PanelFrame(
                 .fillMaxWidth()
                 .height(26.dp)
                 .alpha(chromeAlpha)
+                .onGloballyPositioned { header.coords = it }
                 .pointerInput(Unit) {
                     // In edit mode the header moves the panel. Otherwise holding it still for three
                     // seconds arms it, and the next drag enters edit mode and carries on as a move.
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = true)
                         val start = panelNow.rect
+                        // Finger positions on the screen: the header moves with the panel, so its own
+                        // positions would jump back by a cell each time the panel moves one.
+                        val from = header.onScreen(down.position)
                         if (editNow) {
-                            var total = Offset.Zero
                             while (true) {
                                 val e = awaitPointerEvent()
                                 val c = e.changes.firstOrNull() ?: break
                                 if (!c.pressed) break
-                                total += c.positionChange()
                                 c.consume()
-                                onHeaderDrag(total.x, total.y, start)
+                                val d = header.onScreen(c.position) - from
+                                onHeaderDrag(d.x, d.y, start)
                             }
+                            onDragEnd()
                             return@awaitEachGesture
                         }
                         val armedAt = down.uptimeMillis + HOLD_MS
@@ -274,9 +301,10 @@ private fun PanelFrame(
                                 val mc = m.changes.firstOrNull() ?: break
                                 if (!mc.pressed) break
                                 mc.consume()
-                                val d = mc.position - down.position
+                                val d = header.onScreen(mc.position) - from
                                 onHeaderDrag(d.x, d.y, start)
                             }
+                            onDragEnd()
                             return@awaitEachGesture
                         }
                     }
@@ -306,31 +334,43 @@ private fun PanelFrame(
                 body()
                 // While arranging, panels are moved, not used.
                 if (edit) Box(Modifier.fillMaxSize().pointerInput(Unit) { detectTapGestures { } })
-                if (edit) ResizeCorner(panel, onResize, Modifier.align(Alignment.BottomEnd))
+                if (edit) ResizeCorner(panel, onResize, onDragEnd, Modifier.align(Alignment.BottomEnd))
             }
         }
     }
 }
 
+/** Where a piece of the panel is on the screen, to turn its own pointer positions into screen ones. */
+private class Place {
+    var coords: LayoutCoordinates? = null
+
+    fun onScreen(local: Offset): Offset = coords?.takeIf { it.isAttached }?.localToRoot(local) ?: local
+}
+
 /** The 12 x 12 corner the desktop drags to resize, with a larger touch area around it. */
 @Composable
-private fun ResizeCorner(panel: Panel, onResize: (Float, Float, Rect) -> Unit, modifier: Modifier) {
+private fun ResizeCorner(panel: Panel, onResize: (Float, Float, Rect) -> Unit, onDragEnd: () -> Unit, modifier: Modifier) {
     val panelNow by rememberUpdatedState(panel)
+    val corner = remember { Place() }
     Box(
         modifier
             .size(32.dp)
+            .onGloballyPositioned { corner.coords = it }
             .pointerInput(Unit) {
                 awaitEachGesture {
                     val down = awaitFirstDown()
                     val start = panelNow.rect
+                    // The corner moves as the panel grows, so the finger is followed on the screen.
+                    val from = corner.onScreen(down.position)
                     while (true) {
                         val e = awaitPointerEvent(PointerEventPass.Main)
                         val c = e.changes.firstOrNull() ?: break
                         if (!c.pressed) break
                         c.consume()
-                        val d = c.position - down.position
+                        val d = corner.onScreen(c.position) - from
                         onResize(d.x, d.y, start)
                     }
+                    onDragEnd()
                 }
             }
             .semantics { contentDescription = "Resize" }
