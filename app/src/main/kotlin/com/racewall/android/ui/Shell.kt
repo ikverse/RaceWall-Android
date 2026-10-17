@@ -73,6 +73,8 @@ interface AppActions : TransportActions {
     fun seekBy(ms: Double) {}
     fun focus(number: String?) {}
     fun setLayouts(layouts: Layouts) {}
+    /** Shows a layout without saving it, while a panel is dragged; setLayouts saves it after. */
+    fun previewLayouts(layouts: Layouts) {}
     fun setSettings(settings: Settings) {}
     fun showLastResult() {}
     fun range(topic: String, from: Double, to: Double, filter: List<String>?): Any? = null
@@ -228,7 +230,7 @@ fun RaceWallApp(screen: Screen, actions: AppActions, videoDriving: Boolean = fal
                     edit = edit,
                     chromeAlpha = chromeAlpha,
                     dimPanels = settings.dimPanels,
-                    actions = CanvasActions(actions::setLayouts, { edit = it }, { n -> actions.focus(if (screen.ui.focusDriver == n) null else n) }, actions::range),
+                    actions = CanvasActions(actions::setLayouts, actions::previewLayouts, { edit = it }, { n -> actions.focus(if (screen.ui.focusDriver == n) null else n) }, actions::range),
                 )
             }
             Transport(screen.frame, screen.ui, actions, picker, { picker = it }, chromeAlpha, videoDriving = videoDriving)

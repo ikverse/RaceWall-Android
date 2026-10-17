@@ -3,6 +3,8 @@ package com.racewall.android.state
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonPrimitive
+import kotlin.math.abs
+import kotlin.math.sign
 
 /** The layout grid: 48 columns by 30 rows. Panels snap to cells and never overlap. */
 const val COLS = 48
@@ -65,6 +67,32 @@ object Grid {
     } else {
         Rect(start.x, start.y, minOf(maxOf(min.first, start.w + dx), COLS - start.x), minOf(maxOf(min.second, start.h + dy), ROWS - start.y))
     }
+
+    /**
+     * The nearest place to `target` a panel at `current` can get to, one cell at a time, without
+     * overlapping another panel. Each axis stops on its own, so a panel against a neighbour still
+     * follows the finger the other way. Both axis orders are tried and the closer result is kept.
+     */
+    fun reach(current: Rect, target: Rect, panels: List<Panel>, ignoreId: String): Rect {
+        val across = step(step(current, target, true, panels, ignoreId), target, false, panels, ignoreId)
+        val down = step(step(current, target, false, panels, ignoreId), target, true, panels, ignoreId)
+        return if (distance(down, target) < distance(across, target)) down else across
+    }
+
+    private fun step(from: Rect, target: Rect, horizontal: Boolean, panels: List<Panel>, ignoreId: String): Rect {
+        var r = from
+        while (true) {
+            val next = if (horizontal) {
+                r.copy(x = r.x + (target.x - r.x).sign, w = r.w + (target.w - r.w).sign)
+            } else {
+                r.copy(y = r.y + (target.y - r.y).sign, h = r.h + (target.h - r.h).sign)
+            }
+            if (next == r || !fits(next, panels, ignoreId)) return r
+            r = next
+        }
+    }
+
+    private fun distance(a: Rect, b: Rect) = abs(a.x - b.x) + abs(a.y - b.y) + abs(a.w - b.w) + abs(a.h - b.h)
 }
 
 /** The F1 TV player is part of the app, not a plugin; it is listed with the widgets all the same. */

@@ -237,6 +237,10 @@ class CoreViewModel(app: Application) : AndroidViewModel(app), AppActions {
     override fun focus(number: String?) = core.setFocus(number)
     override fun range(topic: String, from: Double, to: Double, filter: List<String>?): Any? = core.range(topic, from, to, filter)
 
+    override fun previewLayouts(layouts: Layouts) {
+        _layouts.value = layouts
+    }
+
     override fun setLayouts(layouts: Layouts) {
         _layouts.value = layouts
         subscribe()
