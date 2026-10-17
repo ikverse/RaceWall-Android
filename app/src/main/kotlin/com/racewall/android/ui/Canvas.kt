@@ -57,6 +57,7 @@ import com.racewall.android.widgets.WidgetScope
 import com.racewall.android.widgets.WidgetSpec
 import com.racewall.android.widgets.widget
 import kotlinx.serialization.json.JsonElement
+import kotlin.math.abs
 import kotlin.math.hypot
 import kotlin.math.roundToInt
 
@@ -99,11 +100,35 @@ fun PanelCanvas(
     var openSettings by remember { mutableStateOf<String?>(null) }
     // Arranging panels hides the gear, so its popover goes too, and stays shut afterwards.
     LaunchedEffect(edit) { if (edit) openSettings = null }
+    val editNow by rememberUpdatedState(edit)
+    val panelsNow by rememberUpdatedState(layout.panels)
+    val grab = remember { CornerGrab() }
 
     BoxWithConstraints(
         modifier
             .fillMaxSize()
             .padding(6.dp)
+            .pointerInput(Unit) {
+                // The canvas takes resizes before the panels see the touch, so the corner can be
+                // grabbed from a finger's width around it, in the gap and over a neighbour too.
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                    if (!editNow) return@awaitEachGesture
+                    val panel = resizeCornerAt(down.position, panelsNow, size.width.toFloat() / COLS, size.height.toFloat() / ROWS, density)
+                        ?: return@awaitEachGesture
+                    down.consume()
+                    val start = panel.rect
+                    while (true) {
+                        val e = awaitPointerEvent(PointerEventPass.Initial)
+                        val c = e.changes.firstOrNull { it.id == down.id } ?: break
+                        c.consume()
+                        if (!c.pressed) break
+                        val d = c.position - down.position
+                        grab.resize(panel, d.x, d.y, start)
+                    }
+                    grab.end()
+                }
+            }
             .drawBehind {
                 if (!edit) return@drawBehind
                 val c = Color(0xFF0F0F0F)
@@ -141,6 +166,9 @@ fun PanelCanvas(
             dragged?.let(actions.setLayouts)
             dragged = null
         }
+
+        grab.resize = { panel, dx, dy, start -> drag(panel, true, dx, dy, start) }
+        grab.end = ::dragEnd
 
         for (panel in layout.panels) {
             val spec = widget(panel.widget)
@@ -195,7 +223,6 @@ fun PanelCanvas(
                         if (collapsed) actions.setLayouts(latest.withPanels { list -> list.map { if (it.id == panel.id) it.copy(collapsed = null) else it } })
                         actions.setEdit(true)
                     },
-                    onResize = { dx, dy, start -> drag(panel, true, dx, dy, start) },
                 ) {
                     when {
                         spec != null && scope != null -> spec.content(scope)
@@ -231,7 +258,6 @@ private fun PanelFrame(
     onRemove: () -> Unit,
     onHeaderDrag: (Float, Float, Rect) -> Unit,
     onArm: () -> Unit,
-    onResize: (Float, Float, Rect) -> Unit,
     onDragEnd: () -> Unit,
     body: @Composable () -> Unit,
 ) {
@@ -334,7 +360,7 @@ private fun PanelFrame(
                 body()
                 // While arranging, panels are moved, not used.
                 if (edit) Box(Modifier.fillMaxSize().pointerInput(Unit) { detectTapGestures { } })
-                if (edit) ResizeCorner(panel, onResize, onDragEnd, Modifier.align(Alignment.BottomEnd))
+                if (edit) ResizeCorner(panel, Modifier.align(Alignment.BottomEnd))
             }
         }
     }
@@ -347,32 +373,39 @@ private class Place {
     fun onScreen(local: Offset): Offset = coords?.takeIf { it.isAttached }?.localToRoot(local) ?: local
 }
 
-/** The 12 x 12 corner the desktop drags to resize, with a larger touch area around it. */
+/** What a corner drag on the canvas calls, set on each composition. */
+private class CornerGrab {
+    var resize: (Panel, Float, Float, Rect) -> Unit = { _, _, _, _ -> }
+    var end: () -> Unit = {}
+}
+
+/**
+ * The panel whose resize corner a touch at `at` (canvas pixels) grabs: within a 48 dp square
+ * centred on the corner, the nearest corner if two are in reach. A touch on any header is left
+ * to the header and its buttons. `dp` is pixels per dp.
+ */
+internal fun resizeCornerAt(at: Offset, panels: List<Panel>, cellW: Float, cellH: Float, dp: Float): Panel? {
+    val inset = 3 * dp
+    val reach = 24 * dp
+    val onHeader = panels.any { p ->
+        val top = p.y * cellH + inset
+        at.x >= p.x * cellW + inset && at.x <= (p.x + p.w) * cellW - inset && at.y >= top && at.y <= top + 26 * dp
+    }
+    if (onHeader) return null
+    return panels
+        .filter { it.collapsed != true }
+        .map { p -> p to maxOf(abs(at.x - ((p.x + p.w) * cellW - inset)), abs(at.y - ((p.y + p.h) * cellH - inset))) }
+        .filter { it.second <= reach }
+        .minByOrNull { it.second }
+        ?.first
+}
+
+/** The 12 x 12 corner the desktop drags to resize. The canvas takes the touches, see [resizeCornerAt]. */
 @Composable
-private fun ResizeCorner(panel: Panel, onResize: (Float, Float, Rect) -> Unit, onDragEnd: () -> Unit, modifier: Modifier) {
-    val panelNow by rememberUpdatedState(panel)
-    val corner = remember { Place() }
+private fun ResizeCorner(panel: Panel, modifier: Modifier) {
     Box(
         modifier
             .size(32.dp)
-            .onGloballyPositioned { corner.coords = it }
-            .pointerInput(Unit) {
-                awaitEachGesture {
-                    val down = awaitFirstDown()
-                    val start = panelNow.rect
-                    // The corner moves as the panel grows, so the finger is followed on the screen.
-                    val from = corner.onScreen(down.position)
-                    while (true) {
-                        val e = awaitPointerEvent(PointerEventPass.Main)
-                        val c = e.changes.firstOrNull() ?: break
-                        if (!c.pressed) break
-                        c.consume()
-                        val d = corner.onScreen(c.position) - from
-                        onResize(d.x, d.y, start)
-                    }
-                    onDragEnd()
-                }
-            }
             .semantics { contentDescription = "Resize" }
             .testTag("resize-${panel.id}"),
         contentAlignment = Alignment.BottomEnd,
