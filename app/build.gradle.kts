@@ -6,7 +6,7 @@ plugins {
 }
 
 // One place decides the version; the code is worked out from it so the two never disagree.
-val appVersionName = "0.1.0"
+val appVersionName = "0.1.1"
 val appVersionCode = appVersionName.split(".").let { (major, minor, patch) -> major.toInt() * 10_000 + minor.toInt() * 100 + patch.toInt() }
 
 /** What `local.properties` holds. Git ignores that file: it is where this machine's secrets live. */
