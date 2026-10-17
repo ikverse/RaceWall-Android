@@ -187,6 +187,32 @@ class ShellTest {
     }
 
     @Test
+    fun `a drag starting just outside the corner still resizes the panel`() {
+        layouts = weatherAlone()
+        show()
+        compose.onNodeWithContentDescription("Edit layout").performClick()
+        // The resize mark's box is 32 x 32 at the corner: 40,40 is 8 beyond it, outside the panel.
+        dragIn("resize-weather-1", Offset(40f, 40f), Offset(100f, 55f))
+        val after = layouts.current().panels.single()
+        assertEquals(15 + 3, after.w)
+        assertEquals(13 + 2, after.h)
+    }
+
+    @Test
+    fun `a neighbour's remove button next to a corner still removes the neighbour`() {
+        // Race control sits right below the weather panel, their right edges in line.
+        layouts = defaultLayouts().withPanels { list ->
+            list.filter { it.id == "weather-1" || it.id == "race-control-1" }.map {
+                if (it.id == "weather-1") it.copy(x = 10, y = 5, w = 15, h = 13) else it.copy(x = 10, y = 18, w = 15, h = 8)
+            }
+        }
+        show()
+        compose.onNodeWithContentDescription("Edit layout").performClick()
+        compose.onNodeWithContentDescription("Remove Race control").performClick()
+        assertEquals(listOf("weather-1"), layouts.current().panels.map { it.id })
+    }
+
+    @Test
     fun `moving a panel by its header in edit mode follows the finger and saves once`() {
         layouts = weatherAlone()
         show()
