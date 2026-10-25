@@ -172,12 +172,39 @@ class SessionModel(
 
     /** Adds car positions, telemetry and the circuit outline, from the compressed archive feeds. */
     fun attachCars(files: CarFiles) {
+        attachPositions(files["Position.z"] ?: "")
+        attachTelemetry(files["CarData.z"] ?: "")
+    }
+
+    /**
+     * Adds the car positions alone, and with them the circuit outline, so the track map can draw
+     * before the larger telemetry feed has arrived.
+     */
+    fun attachPositions(text: String) {
         val utc0 = utcAt(0.0) ?: return
-        cars = CarData.build(files["Position.z"] ?: "", files["CarData.z"] ?: "") { it - utc0 }
+        cars = CarData.build(text, "") { it - utc0 }
         outline = null
         outlineTried = Long.MIN_VALUE / 2
         registerCars()
     }
+
+    /** Adds the telemetry to the positions attached before. */
+    fun attachTelemetry(text: String) {
+        val c = cars ?: return
+        for (payload in decodeZStream(text)) c.addCarData(payload)
+        c.trim()
+    }
+
+    /** An outline saved from an earlier session at this circuit, shown until this session's own is worked out. */
+    private var savedOutline: CircuitOutline? = null
+
+    fun useSavedOutline(o: CircuitOutline) {
+        savedOutline = o
+        bus.provide(Topic.CIRCUIT, TopicProvider(source, { _ -> circuitOutline() ?: savedOutline }))
+    }
+
+    /** This session's own outline, worked out now if the car positions allow it; never the saved one. */
+    fun outlineNow(): CircuitOutline? = circuitOutline()
 
     private fun ensureCars(): CarData {
         cars?.let { return it }
@@ -191,7 +218,7 @@ class SessionModel(
         val c = cars ?: return
         bus.provide(Topic.CAR_POSITION, TopicProvider(source, { t -> c.positionsAt(t) }))
         bus.provide(Topic.CAR_TELEMETRY, TopicProvider(source, { t -> c.telemetryAt(t) }, { from, to, filter -> c.telemetryRange(from, to, filter) }))
-        bus.provide(Topic.CIRCUIT, TopicProvider(source, { _ -> circuitOutline() }))
+        bus.provide(Topic.CIRCUIT, TopicProvider(source, { _ -> circuitOutline() ?: savedOutline }))
     }
 
     /**

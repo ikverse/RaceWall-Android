@@ -73,9 +73,22 @@ class VideoHub(
     private val players = LinkedHashMap<String, PlayerHandle>()
     private var handoff: Handoff? = null
 
-    fun register(panelId: String, handle: PlayerHandle) {
+    /**
+     * Adds a player. One that `canLead` (an F1 TV panel) may become the main player; an Onboard
+     * panel never does: it only follows.
+     */
+    fun register(panelId: String, handle: PlayerHandle, canLead: Boolean = true) {
         players[panelId] = handle
-        if (main == null) main = panelId
+        if (!canLead) followOnly += panelId
+        if (main == null && canLead) main = panelId
+    }
+
+    /** Panel ids of the players that never lead, such as the Onboard panels. */
+    private val followOnly = HashSet<String>()
+
+    /** The app left the screen: every player stops where it is, and nothing starts again by itself. */
+    fun pauseAll() {
+        for (p in players.values) if (!p.paused) p.pause()
     }
 
     fun unregister(panelId: String) {
@@ -94,9 +107,10 @@ class VideoHub(
             )
         }
         players.remove(panelId)
+        followOnly.remove(panelId)
         metas.remove(panelId)
         alone = alone.filter { it != panelId }
-        if (main == panelId) main = players.keys.firstOrNull()
+        if (main == panelId) main = players.keys.firstOrNull { it !in followOnly }
         if (audible == panelId) audible = null
         if (leaderId() == null) driving = false
     }
@@ -127,7 +141,7 @@ class VideoHub(
     fun leaderId(): String? {
         val m = main
         if (m != null && m in players && m !in alone) return m
-        return players.keys.firstOrNull { it !in alone }
+        return players.keys.firstOrNull { it !in alone && it !in followOnly }
     }
 
     fun leader(): PlayerHandle? = leaderId()?.let { players[it] }

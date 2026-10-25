@@ -65,7 +65,7 @@ class ShellTest {
         }
         override fun setSpeed(speed: Double) {}
         override suspend fun listSeason(year: Int): List<ArchiveMeeting> = BritishGp.meetings
-        override suspend fun replay(path: String) {}
+        override fun replay(path: String) {}
         override fun setLayouts(layouts: Layouts) {
             saves++
             this@ShellTest.layouts = layouts
@@ -133,6 +133,34 @@ class ShellTest {
         compose.onNodeWithContentDescription("Delete layout $name").performClick()
         compose.onNodeWithContentDescription("Delete").performClick()
         assertEquals(4, layouts.list.size)
+    }
+
+    @Test
+    fun `after a layout is deleted, tapping the tab now in its place opens that tab's layout`() {
+        layouts = com.racewall.android.state.LayoutOps.newLayout(com.racewall.android.state.LayoutOps.newLayout(defaultLayouts()).first).first.copy(active = "Race")
+        show()
+        // Touching "Layout 1" first ties the fifth place in the strip to it.
+        compose.onNodeWithTag("tab-Layout 1").performClick()
+        assertEquals("Layout 1", layouts.active)
+        compose.onNodeWithContentDescription("Edit layout").performClick()
+        compose.onNodeWithContentDescription("Delete layout Layout 1").performClick()
+        compose.onNodeWithContentDescription("Delete").performClick()
+        compose.onNodeWithTag("tab-Race").performClick()
+        compose.onNodeWithTag("tab-Layout 2").performClick()
+        assertEquals("Layout 2", layouts.active)
+    }
+
+    @Test
+    fun `dragging a tab in edit mode moves the layout`() {
+        show()
+        compose.onNodeWithContentDescription("Edit layout").performClick()
+        compose.onNodeWithTag("tab-Race").performTouchInput {
+            down(center)
+            repeat(20) { moveBy(Offset(10f, 0f)) }
+            up()
+        }
+        compose.waitForIdle()
+        assertNotEquals("Race", layouts.list.first().name, layouts.list.map { it.name }.toString())
     }
 
     @Test
@@ -225,6 +253,43 @@ class ShellTest {
         val xs = previews.map { it.current().panels.single().x }
         assertEquals(listOf(9, 8, 7, 6), xs)
         assertEquals(1, saves)
+    }
+
+    @Test
+    fun `after a panel before it is removed, a header still moves its own panel`() {
+        // Race control comes first in the list, the weather panel second.
+        layouts = defaultLayouts().withPanels { list ->
+            list.filter { it.id == "weather-1" || it.id == "race-control-1" }.map {
+                if (it.id == "weather-1") it.copy(x = 10, y = 5, w = 15, h = 13) else it.copy(x = 10, y = 18, w = 15, h = 8)
+            }
+        }
+        show()
+        compose.onNodeWithContentDescription("Edit layout").performClick()
+        // Touching race control's header first ties the first place in the list to it.
+        dragIn("panel-race-control-1", Offset(60f, 15f), Offset(33f, 0f))
+        compose.onNodeWithContentDescription("Remove Race control").performClick()
+        dragIn("panel-weather-1", Offset(60f, 15f), Offset(-133f, 0f))
+        val after = layouts.current().panels.single()
+        assertEquals("weather-1", after.id)
+        assertEquals(10 - 4, after.x)
+        assertEquals(15 to 13, after.w to after.h)
+    }
+
+    @Test
+    fun `switching layouts leaves each header moving its own panel`() {
+        show()
+        compose.onNodeWithContentDescription("Edit layout").performClick()
+        // Touch every header in the Race layout, then switch to a layout with other panels.
+        for (id in listOf("timing-1", "track-map-1", "race-control-1", "tyre-strategy-1", "weather-1")) dragIn("panel-$id", Offset(60f, 15f), Offset(0f, 0f), steps = 1)
+        compose.onNodeWithTag("tab-Between sessions").performClick()
+        layouts = layouts.withPanels { list -> list.map { if (it.id == "race-control-1") it.copy(y = 4, h = 26) else it } }
+        val before = layouts.current().panels.associateBy { it.id }
+        dragIn("panel-race-control-1", Offset(60f, 15f), Offset(0f, -60f))
+        val after = layouts.current().panels.associateBy { it.id }
+        // A cell is about 27 high here: 60 up is two cells.
+        assertEquals(2, after.getValue("race-control-1").y)
+        assertEquals(26, after.getValue("race-control-1").h)
+        for (id in before.keys - "race-control-1") assertEquals(before[id], after[id], id)
     }
 
     @Test

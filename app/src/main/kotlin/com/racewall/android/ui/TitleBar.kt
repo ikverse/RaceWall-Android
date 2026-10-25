@@ -1,8 +1,10 @@
 package com.racewall.android.ui
 
+import android.content.res.Configuration
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -10,7 +12,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -30,6 +31,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -52,8 +54,10 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInParent
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
@@ -61,6 +65,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Popup
@@ -127,6 +132,11 @@ fun TitleBar(
     var dragFrom by remember { mutableStateOf<Int?>(null) }
     var dragDx by remember { mutableFloatStateOf(0f) }
     val density = LocalDensity.current
+    val tabScroll = rememberScrollState()
+    val config = LocalConfiguration.current
+    /** A window under 900 wide shows Add widget as its icon alone. */
+    val narrow = config.screenWidthDp < 900
+    val keyboard = config.keyboard == Configuration.KEYBOARD_QWERTY && config.hardKeyboardHidden == Configuration.HARDKEYBOARDHIDDEN_NO
 
     Row(
         Modifier
@@ -139,14 +149,22 @@ fun TitleBar(
         horizontalArrangement = Arrangement.spacedBy(2.dp),
     ) {
         Logo()
-        Row(Modifier.fillMaxHeight().semantics { contentDescription = "Layouts" }, verticalAlignment = Alignment.CenterVertically) {
+        // The tabs take the room left over and scroll sideways in it, so the buttons on the right
+        // always stay on a narrow screen, such as a folding phone's inner screen held upright.
+        Row(
+            Modifier.weight(1f).fillMaxHeight().horizontalScroll(tabScroll).semantics { contentDescription = "Layouts" },
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             val list = layouts.list
             val from = dragFrom
-            // Where the held tab would land if let go now.
-            val target = if (from == null || abs(dragDx) <= 4) -1 else {
-                val centre = (mids[from] ?: 0f) + dragDx
-                list.indices.count { it != from && (mids[it] ?: 0f) < centre }
+            /** Where the held tab would land if let go now; read again when it is let go, which can come before a redraw. */
+            fun targetNow(): Int {
+                val held = dragFrom
+                if (held == null || abs(dragDx) <= 4) return -1
+                val centre = (mids[held] ?: 0f) + dragDx
+                return list.indices.count { it != held && (mids[it] ?: 0f) < centre }
             }
+            val target = targetNow()
             fun shift(i: Int): Float {
                 if (from == null || target < 0) return 0f
                 val w = widths[from] ?: 0f
@@ -157,7 +175,8 @@ fun TitleBar(
                     else -> 0f
                 }
             }
-            list.forEachIndexed { i, layout ->
+            // Keyed by name: a tab's touch handling stays with its layout when layouts are deleted or moved.
+            list.forEachIndexed { i, layout -> key(layout.name) {
                 val name = layout.name
                 Box(
                     Modifier
@@ -185,7 +204,7 @@ fun TitleBar(
                                 onRename = { if (edit && !isBuiltIn(name)) { deleting = null; renaming = name } },
                                 onDrag = { dx -> if (edit) { dragFrom = i; dragDx = dx.coerceIn((mids[0] ?: 0f) - (mids[i] ?: 0f), (mids[list.size - 1] ?: 0f) - (mids[i] ?: 0f)) } },
                                 onDrop = {
-                                    val t = target
+                                    val t = targetNow()
                                     if (dragFrom != null && t >= 0 && t != i) actions.moveLayout(i, t)
                                     dragFrom = null
                                     dragDx = 0f
@@ -214,24 +233,24 @@ fun TitleBar(
                         }
                     }
                 }
-            }
+            } }
             if (edit) {
                 RwButton(onClick = { deleting = null; renaming = actions.newLayout() }, label = "New layout", horizontalPadding = 0f, modifier = Modifier.padding(start = 4.dp).size(26.dp)) { c ->
                     Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { Icon(R.drawable.ic_add, Rw.t3) }
                 }
             }
         }
-        Spacer(Modifier.weight(1f))
-        if (notice.isNotEmpty()) BasicText(notice, style = Rw.text(13f, Rw.t2), modifier = Modifier.padding(end = 8.dp))
+        if (notice.isNotEmpty()) BasicText(notice, style = Rw.text(13f, Rw.t2), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 320.dp).padding(end = 8.dp))
         RwButton(onClick = actions.openCommandBar, label = "Command bar") { c ->
             Icon(R.drawable.ic_search, c)
-            Box(Modifier.border(1.dp, Rw.border2, RoundedCornerShape(3.dp)).padding(horizontal = 4.dp)) { BasicText("Ctrl K", style = Rw.text(11f, Rw.t3)) }
+            // Ctrl+K only works with a keyboard, so the hint shows only while one is connected.
+            if (keyboard) Box(Modifier.border(1.dp, Rw.border2, RoundedCornerShape(3.dp)).padding(horizontal = 4.dp)) { BasicText("Ctrl K", style = Rw.text(11f, Rw.t3)) }
         }
         if (edit) {
             Box {
                 RwButton(onClick = { addOpen = !addOpen }, label = "Add widget") { c ->
                     Icon(R.drawable.ic_add, c)
-                    BasicText("Add widget", style = Rw.text(13f, c))
+                    if (!narrow) BasicText("Add widget", style = Rw.text(13f, c))
                 }
                 if (addOpen) {
                     Popup(alignment = Alignment.TopEnd, offset = with(density) { IntOffset(0, 32.dp.roundToPx()) }, onDismissRequest = { addOpen = false }, properties = PopupProperties(focusable = true)) {
@@ -277,29 +296,41 @@ private fun MenuItem(text: String, hint: String, onClick: () -> Unit) {
 @Composable
 private fun Tab(name: String, active: Boolean, edit: Boolean, onOpen: () -> Unit, onRename: () -> Unit, onDrag: (Float) -> Unit, onDrop: () -> Unit) {
     val editNow by rememberUpdatedState(edit)
+    // The gesture keeps running across recompositions, so it reads the actions as they are now.
+    val open by rememberUpdatedState(onOpen)
+    val rename by rememberUpdatedState(onRename)
+    val drag by rememberUpdatedState(onDrag)
+    val drop by rememberUpdatedState(onDrop)
     var lastTap by remember { mutableStateOf(0L) }
+    var coords by remember { mutableStateOf<LayoutCoordinates?>(null) }
+    /** A finger position on the screen: the tab moves under the finger while dragged or scrolled. */
+    fun onScreen(local: Offset): Offset = coords?.takeIf { it.isAttached }?.localToRoot(local) ?: local
     Box(
         Modifier
             .fillMaxHeight()
             .drawBehind { if (active) drawLine(Rw.brand, Offset(0f, size.height - 0.5f), Offset(size.width, size.height - 0.5f), 1.dp.toPx()) }
+            .onGloballyPositioned { coords = it }
             .pointerInput(Unit) {
                 awaitEachGesture {
                     val down = awaitFirstDown()
+                    val from = onScreen(down.position)
                     var moved = false
+                    /** The finger slid the tabs along rather than tapping one. */
+                    var slid = false
                     while (true) {
                         val e = awaitPointerEvent()
                         val c = e.changes.firstOrNull() ?: break
                         if (!c.pressed) break
-                        val dx = c.position.x - down.position.x
+                        val dx = onScreen(c.position).x - from.x
                         if (editNow && (moved || abs(dx) > 4 * density)) {
                             moved = true
                             c.consume()
-                            onDrag(dx)
-                        }
+                            drag(dx)
+                        } else if (abs(dx) > viewConfiguration.touchSlop) slid = true
                     }
-                    if (moved) onDrop() else {
+                    if (moved) drop() else if (!slid) {
                         val now = System.currentTimeMillis()
-                        if (now - lastTap < 350) onRename() else onOpen()
+                        if (now - lastTap < 350) rename() else open()
                         lastTap = now
                     }
                 }

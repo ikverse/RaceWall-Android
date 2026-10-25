@@ -156,6 +156,16 @@ private class Motion {
     }
 }
 
+/** What the map says while it has no circuit to draw: what it is waiting for, or what went wrong. */
+internal fun circuitMessage(s: WidgetScope): String = when {
+    s.frame.info == null -> "Pick a session to see the circuit."
+    s.frame.cars == "loading" -> "Loading car positions…"
+    s.frame.cars == "failed" -> "Car positions could not be loaded."
+    s.mode == Mode.LIVE -> "The circuit appears after a clean lap."
+    s.frame.cars == "loaded" -> "No circuit outline for this session."
+    else -> "Loading the circuit…"
+}
+
 /** The circuit and every car on it, flat or in 3D, as the desktop's plugins/track-map. */
 val TrackMapWidget = WidgetSpec(
     id = "racewall.track-map",
@@ -220,7 +230,7 @@ val TrackMapWidget = WidgetSpec(
         val h = size.height
         val px = 1.dp.toPx()
         if (outline == null || turned == null) {
-            fillText(measurer, "Loading the circuit…", w / 2, h / 2, Rw.t3, Align.CENTER)
+            fillText(measurer, circuitMessage(s), w / 2, h / 2, Rw.t3, Align.CENTER)
             return@Canvas
         }
         val rot = turner(deg)

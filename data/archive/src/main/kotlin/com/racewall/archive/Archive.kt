@@ -154,10 +154,24 @@ class Archive(
     @Suppress("UNCHECKED_CAST")
     suspend fun fetchCarFiles(path: String): CarFiles = coroutineScope {
         val dir = if (path.endsWith("/")) path else "$path/"
-        val infoText = download("${dir}SessionInfo.json", false)
-        val info = infoText?.let { FeedJson.parse(stripBom(it)) as? Map<String, Any?> }
-        val complete = (info?.get("ArchiveStatus") as? Map<String, Any?>)?.get("Status") == "Complete"
+        val complete = isComplete(dir)
         CAR_STREAMS.map { name -> async { name to (download("$dir$name.jsonStream", complete) ?: "") } }.awaitAll().toMap()
+    }
+
+    /**
+     * One of the car feeds ("Position.z" or "CarData.z"), so the positions can be shown before the
+     * larger telemetry has arrived. An empty string when the archive does not have it.
+     */
+    suspend fun fetchCarFile(path: String, name: String): String {
+        val dir = if (path.endsWith("/")) path else "$path/"
+        return download("$dir$name.jsonStream", isComplete(dir)) ?: ""
+    }
+
+    /** Whether the archive marks the session complete, so its files can be cached. */
+    @Suppress("UNCHECKED_CAST")
+    private suspend fun isComplete(dir: String): Boolean {
+        val info = download("${dir}SessionInfo.json", false)?.let { FeedJson.parse(stripBom(it)) as? Map<String, Any?> }
+        return (info?.get("ArchiveStatus") as? Map<String, Any?>)?.get("Status") == "Complete"
     }
 
     private fun text(v: Any?): String = if (v == null) "" else jsString(v)

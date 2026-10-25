@@ -49,6 +49,7 @@ import com.racewall.android.state.Settings
 import com.racewall.android.state.VIEWING
 import com.racewall.android.state.defaultLayouts
 import com.racewall.android.widgets.WIDGETS
+import com.racewall.android.widgets.isVideo
 import com.racewall.android.widgets.widget
 import kotlinx.coroutines.delay
 import kotlin.random.Random
@@ -233,7 +234,13 @@ fun RaceWallApp(screen: Screen, actions: AppActions, videoDriving: Boolean = fal
                     actions = CanvasActions(actions::setLayouts, actions::previewLayouts, { edit = it }, { n -> actions.focus(if (screen.ui.focusDriver == n) null else n) }, actions::range),
                 )
             }
-            Transport(screen.frame, screen.ui, actions, picker, { picker = it }, chromeAlpha, videoDriving = videoDriving)
+            val hasVideo = layouts.current().panels.any { isVideo(it.widget) && it.collapsed != true }
+            Transport(
+                screen.frame, screen.ui, actions, picker, { picker = it }, chromeAlpha,
+                videoDriving = videoDriving,
+                videoQuality = if (hasVideo) settings.videoQuality else null,
+                setVideoQuality = { actions.setSettings(settings.copy(videoQuality = it)) },
+            )
         }
         if (drawer == "settings") {
             Box(Modifier.fillMaxSize().padding(top = 38.dp), contentAlignment = Alignment.TopEnd) {

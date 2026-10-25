@@ -54,7 +54,7 @@ fun matching(commands: List<Command>, query: String): List<Command> {
 }
 
 /**
- * Ctrl+K, or the search button: type a few letters of what you want and press Enter. A 560 wide
+ * The search button, or Ctrl+K on a keyboard: type a few letters of what you want and press Enter. A 560 wide
  * box 56 below the top, over everything.
  */
 @Composable

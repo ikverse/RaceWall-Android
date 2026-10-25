@@ -98,6 +98,9 @@ object Grid {
 /** The F1 TV player is part of the app, not a plugin; it is listed with the widgets all the same. */
 const val F1TV_WIDGET = "racewall.f1tv"
 
+/** The focused driver's onboard camera, an F1 TV player too. */
+const val ONBOARD_WIDGET = "racewall.onboard"
+
 private fun p(widget: String, x: Int, y: Int, w: Int, h: Int, id: String = "${widget.substringAfterLast('.')}-1", settings: Map<String, JsonElement>? = null) =
     Panel(id, widget, x, y, w, h, settings)
 

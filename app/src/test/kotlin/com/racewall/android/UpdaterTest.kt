@@ -47,4 +47,13 @@ class UpdaterTest {
         assertEquals("error", s.state)
         assertTrue("403" in s.message)
     }
+
+    @Test
+    fun `asks the Android app's own releases, and says when they are not public`() = runTest {
+        var asked = ""
+        val s = Updater("0.1.0", Files.createTempDirectory("rw-up").toFile(), Fetcher { url, _ -> asked = url; HttpResult(404, "{}") }).check()
+        assertTrue(asked.startsWith("https://api.github.com/repos/ikverse/RaceWall-Android/releases"), asked)
+        assertEquals("error", s.state)
+        assertTrue("not public" in s.message, s.message)
+    }
 }

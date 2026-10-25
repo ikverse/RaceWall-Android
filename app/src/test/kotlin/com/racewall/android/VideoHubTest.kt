@@ -138,4 +138,39 @@ class VideoHubTest {
         hub.driving = true
         assertTrue(hub.control(VideoHub.Command.SeekBy(5_000.0)))
     }
+
+    @Test
+    fun `an onboard player follows and never leads, even alone or when the main player leaves`() {
+        hub.register("onboard", Fake(), canLead = false)
+        assertNull(hub.main)
+        assertNull(hub.leaderId())
+        hub.register("tv", Fake())
+        assertEquals("tv", hub.main)
+        assertEquals("tv", hub.leaderId())
+        hub.unregister("tv")
+        assertNull(hub.main)
+        assertNull(hub.leaderId())
+    }
+
+    @Test
+    fun `leaving the app pauses every player, and nothing plays again by itself`() {
+        val a = Fake()
+        val b = Fake()
+        val c = Fake(paused = true)
+        hub.register("a", a)
+        hub.register("b", b)
+        hub.register("onboard", c, canLead = false)
+        hub.goAlone("b")
+        hub.pauseAll()
+        assertTrue(a.paused && b.paused && c.paused)
+    }
+
+    @Test
+    fun `the bottom bar's video quality overrides each player's own`() {
+        assertEquals("720", com.racewall.android.state.videoQuality("player", "720"))
+        assertEquals("360", com.racewall.android.state.videoQuality("360", "720"))
+        assertEquals("auto", com.racewall.android.state.videoQuality("auto", "540"))
+        // Something unknown in the settings file leaves the players to their own.
+        assertEquals("540", com.racewall.android.state.videoQuality("4k", "540"))
+    }
 }

@@ -48,7 +48,7 @@ class ScreenshotTest {
         override fun seek(t: Double) {}
         override fun setSpeed(speed: Double) {}
         override suspend fun listSeason(year: Int): List<ArchiveMeeting> = BritishGp.meetings
-        override suspend fun replay(path: String) {}
+        override fun replay(path: String) {}
         override fun setLayouts(layouts: Layouts) {
             this@ScreenshotTest.layouts = layouts
         }

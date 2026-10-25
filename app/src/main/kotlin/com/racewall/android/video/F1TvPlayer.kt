@@ -112,6 +112,24 @@ class F1TvPlayer(context: Context, private val token: () -> String?) {
 
     val ready: Boolean get() = exo.playbackState == Player.STATE_READY
 
+    /**
+     * The tallest picture to play, from VIDEO_QUALITY's keys ("auto", "720", ...), for slower
+     * connections. Applies at once: the player switches to a smaller stream without reloading.
+     */
+    fun setQuality(quality: String) {
+        val height = quality.toIntOrNull()
+        exo.trackSelectionParameters = exo.trackSelectionParameters.buildUpon().apply {
+            if (height == null) clearVideoSizeConstraints() else setMaxVideoSize(Int.MAX_VALUE, height)
+        }.build()
+    }
+
+    /** Stops and forgets the stream, as an Onboard panel does when no driver is focused. */
+    fun unload() {
+        exo.stop()
+        exo.clearMediaItems()
+        loaded = false
+    }
+
     fun release() {
         exo.release()
         loaded = false

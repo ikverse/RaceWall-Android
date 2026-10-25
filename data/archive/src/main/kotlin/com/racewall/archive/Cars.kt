@@ -300,3 +300,30 @@ class CarData(private val utcToT: (Double) -> Double) {
         private fun jsRound(v: Double): Int = Math.floor(v + 0.5).toInt()
     }
 }
+
+/**
+ * A circuit outline as JSON text, saved so the next session at the same circuit can show it straight
+ * away, before its car positions have arrived.
+ */
+object OutlineText {
+    fun write(o: CircuitOutline): String = FeedJson.write(
+        mapOf(
+            "points" to o.points.map { (x, y, z) -> listOf(x, y, z) },
+            "bounds" to listOf(o.bounds.minX, o.bounds.maxX, o.bounds.minY, o.bounds.maxY),
+            "start" to o.start,
+            "sectors" to o.sectors?.let { listOf(it.first, it.second) },
+        ),
+    )
+
+    /** The outline in `text`, or null when it is not one. */
+    fun read(text: String): CircuitOutline? = try {
+        val m = FeedJson.parse(text) as Map<*, *>
+        fun num(v: Any?) = (v as Number).toDouble()
+        val points = (m["points"] as List<*>).map { p -> (p as List<*>).let { Triple(num(it[0]), num(it[1]), num(it[2])) } }
+        val b = (m["bounds"] as List<*>).map(::num)
+        val sectors = (m["sectors"] as? List<*>)?.let { (it[0] as Number).toInt() to (it[1] as Number).toInt() }
+        if (points.isEmpty()) null else CircuitOutline(points, Bounds(b[0], b[1], b[2], b[3]), (m["start"] as? Number)?.toInt(), sectors)
+    } catch (_: Exception) {
+        null
+    }
+}

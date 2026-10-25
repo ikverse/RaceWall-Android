@@ -36,6 +36,8 @@ data class Settings(
     val autoUpdate: Boolean = true,
     /** For each F1 TV replay, session time minus video time in ms, set once with "Mark the start". */
     val videoOffsets: Map<String, Double> = emptyMap(),
+    /** The bottom bar's video quality: "player" leaves each player to its own setting, a height overrides them all. */
+    val videoQuality: String = PER_PLAYER,
 ) {
     fun delay(): Long = delays[viewing] ?: DEFAULT_DELAYS[viewing] ?: 0
 }
@@ -56,6 +58,15 @@ val VIEWING = listOf(
 val DEFAULT_DELAYS = mapOf("in-app" to 0L, "f1tv-tv" to 30_000L, "satellite" to 8_000L, "cable" to 10_000L, "stream" to 40_000L)
 
 val DEFAULT_SOURCE_ORDER = listOf("f1-live", "f1-archive", "openf1", "jolpica")
+
+/** The bottom bar's video quality that leaves each player to its own. */
+const val PER_PLAYER = "player"
+
+/** A player's video quality: the tallest picture it may play, for slower connections. */
+val VIDEO_QUALITY = listOf("auto" to "Auto", "1080" to "1080p", "720" to "720p", "540" to "540p", "360" to "360p")
+
+/** The quality a player plays at: the bottom bar's when it overrides, else the player's own. */
+fun videoQuality(global: String, own: String): String = if (global != PER_PLAYER && VIDEO_QUALITY.any { it.first == global }) global else own
 
 /** Reads and writes JSON files the way the desktop's JsonStore does: to a temporary file, then renamed. */
 class JsonStore(private val file: File) {

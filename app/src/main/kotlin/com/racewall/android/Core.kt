@@ -5,7 +5,7 @@ import com.racewall.analysis.PitWindow
 import com.racewall.analysis.RaceTopics
 import com.racewall.archive.Archive
 import com.racewall.archive.ArchiveMeeting
-import com.racewall.archive.CAR_STREAMS
+import com.racewall.archive.OutlineText
 import com.racewall.archive.SOURCE as ARCHIVE
 import com.racewall.archive.STREAMS
 import com.racewall.archive.SessionFiles
@@ -111,6 +111,8 @@ data class Frame(
     val topics: Map<String, Any> = emptyMap(),
     /** The data sources that answered, in the user's order. */
     val sources: List<String> = emptyList(),
+    /** Car positions and telemetry: none, loading, loaded or failed. */
+    val cars: String = "none",
 ) {
     @Suppress("UNCHECKED_CAST")
     fun <T> topic(name: String): T? = topics[name] as T?
@@ -169,6 +171,8 @@ class Core(
     private val connect: LiveConnect = liveClient,
     /** Told when the track flag changes while live, for the red-flag and safety-car notifications. */
     private val onFlag: (TrackFlag, SessionInfo) -> Unit = { _, _ -> },
+    /** Where circuit outlines are saved, to show at once next time; null saves none. */
+    private val circuits: File? = null,
 ) {
     private class LiveState(
         var model: SessionModel,
@@ -275,7 +279,7 @@ class Core(
             sources.add(a.source)
             topics[name] = a.value
         }
-        val frame = Frame(state, session?.utcAt(t), topics, order.filter { it in sources } + sources.filter { it !in order })
+        val frame = Frame(state, session?.utcAt(t), topics, order.filter { it in sources } + sources.filter { it !in order }, cars)
         if (frame != _frame.value) _frame.value = frame
     }
 
@@ -370,7 +374,16 @@ class Core(
         cars = if (live != null) "loaded" else "none"
         backups.clear()
         bus.setOrder(order)
+        // A replay shows the circuit saved from an earlier session there while its own cars load.
+        if (live == null) outlineFile(s.info)?.takeIf { it.isFile }?.let { f -> runCatching { OutlineText.read(f.readText()) }.getOrNull()?.let(s::useSavedOutline) }
         scope.launch { loadJolpica(s.info) }
+    }
+
+    /** Where the outline of this session's circuit is saved: one per circuit and season. */
+    private fun outlineFile(info: SessionInfo): File? {
+        val dir = circuits ?: return null
+        if (info.year == 0 || info.circuit.isEmpty()) return null
+        return File(dir, "${info.year}-${info.circuit.replace(Regex("[^A-Za-z0-9]+"), "_")}.json")
     }
 
     private suspend fun loadJolpica(info: SessionInfo) {
@@ -380,23 +393,41 @@ class Core(
         tick()
     }
 
-    /** Downloads car positions and telemetry the first time a widget needs them (replays only). */
+    /**
+     * Downloads car positions and telemetry the first time a widget needs them (replays only), or
+     * again after they failed. The positions come first, and with them the circuit, so the track map
+     * draws while the larger telemetry is still on its way.
+     */
     private suspend fun ensureCars() {
         val s = session ?: return
         val path = _ui.value.session?.path ?: return
-        if (cars != "none" || subscribed.none { it in Topic.HEAVY }) return
+        if ((cars != "none" && cars != "failed") || subscribed.none { it in Topic.HEAVY }) return
         cars = "loading"
-        say("Loading car positions and telemetry…")
+        tick()
+        suspend fun file(name: String) =
+            if (path.startsWith(RECORDING)) withContext(Dispatchers.IO) { readFile(recordingDir(path), "$name.jsonStream") }
+            else archive.fetchCarFile(path, name)
         try {
-            val files = if (path.startsWith(RECORDING)) withContext(Dispatchers.IO) { CAR_STREAMS.associateWith { readFile(recordingDir(path), "$it.jsonStream") } }
-            else archive.fetchCarFiles(path)
+            say("Loading car positions…")
+            val positions = file("Position.z")
             if (session !== s) return
-            withContext(Dispatchers.Default) { s.attachCars(files) }
+            val outline = withContext(Dispatchers.Default) {
+                s.attachPositions(positions)
+                s.outlineNow()
+            }
+            if (outline != null) outlineFile(s.info)?.let { f ->
+                withContext(Dispatchers.IO) { runCatching { f.parentFile?.mkdirs(); f.writeText(OutlineText.write(outline)) } }
+            }
+            tick()
+            say("Loading telemetry…")
+            val telemetry = file("CarData.z")
+            if (session !== s) return
+            withContext(Dispatchers.Default) { s.attachTelemetry(telemetry) }
             cars = "loaded"
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (_: Exception) {
-            cars = "failed"
+            if (session === s) cars = "failed"
         } finally {
             say("")
             tick()
@@ -470,6 +501,8 @@ class Core(
     suspend fun afterSignIn() {
         val ui = _ui.value
         if (ui.session == null && ui.error.contains("needs an F1 TV sign-in")) loadLastResult()
+        // Car positions that could not load before the sign-in are tried again.
+        else if (cars == "failed") ensureCars()
     }
 
     // ---------------------------------------------------------------- live

@@ -53,6 +53,7 @@ import com.racewall.android.ui.RaceWallApp
 import com.racewall.android.ui.RaceWallTheme
 import com.racewall.android.ui.Rw
 import com.racewall.android.ui.Screen
+import com.racewall.android.widgets.RadioPlayer
 import com.racewall.android.widgets.SHELL_TOPICS
 import com.racewall.android.widgets.widget
 import com.racewall.archive.Archive
@@ -74,6 +75,7 @@ class CoreViewModel(app: Application) : AndroidViewModel(app), AppActions {
         viewModelScope,
         recordings = File(app.filesDir, "recordings"),
         onFlag = { flag, info -> flagNotice(flag, info) },
+        circuits = File(app.filesDir, "circuits"),
     )
 
     private val settingsStore = JsonStore(File(app.filesDir, "settings.json"))
@@ -224,10 +226,12 @@ class CoreViewModel(app: Application) : AndroidViewModel(app), AppActions {
     }
     override fun setSpeed(speed: Double) = core.setSpeed(speed)
     override suspend fun listSeason(year: Int): List<ArchiveMeeting> = core.listSeason(year)
-    override suspend fun replay(path: String) {
-        core.loadSession(path)
-        core.play()
-        setSettings(_settings.value.copy(lastSession = path))
+    override fun replay(path: String) {
+        viewModelScope.launch {
+            core.loadSession(path)
+            core.play()
+            setSettings(_settings.value.copy(lastSession = path))
+        }
     }
 
     override fun showLastResult() {
@@ -283,10 +287,27 @@ class CoreViewModel(app: Application) : AndroidViewModel(app), AppActions {
     override fun installUpdate() = updater.install(getApplication())
 
     override fun onCleared() = core.stop()
+
+    /**
+     * The app left the screen (Home, another app, the screen off): the players, a team radio clip
+     * and the replay clock stop where they are, and nothing starts again by itself. Live timing
+     * stays connected for its notifications, and the bar offers to go back to the live moment.
+     */
+    fun appHidden() {
+        hub.pauseAll()
+        RadioPlayer.pause()
+        if (core.frame.value.clock.playing) core.pause()
+    }
 }
 
 class MainActivity : ComponentActivity() {
     private val model: CoreViewModel by viewModels()
+
+    override fun onStop() {
+        super.onStop()
+        // Not while folding, unfolding or turning: the window comes straight back.
+        if (!isChangingConfigurations) model.appHidden()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         // Dark bars only: older Androids otherwise draw a light navigation bar under the buttons.
@@ -331,6 +352,7 @@ class MainActivity : ComponentActivity() {
                 clockPlay = { model.core.play() },
                 clockPause = { model.core.pause() },
                 clockSeek = { model.core.seek(it) },
+                quality = settings.videoQuality,
             )
             RaceWallTheme {
                 CompositionLocalProvider(LocalVideoEnv provides env) {

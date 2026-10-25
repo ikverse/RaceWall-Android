@@ -108,6 +108,43 @@ class RecordingTopicsTest {
         val outline = bus.typed<CircuitOutline>(Topic.CIRCUIT, t)
         assertTrue(outline == null || outline.points.size > 20)
     }
+
+    @Test
+    fun `shows positions before the telemetry has arrived, then the same telemetry as all at once`() {
+        val cars = sub("cars")
+        val t = at(cars["utc"] as String)
+        val tt = at(cars["telemetryUtc"] as String)
+        session.attachPositions(read("Position.z.jsonStream"))
+        assertTrue(topic<CarPositions>(Topic.CAR_POSITION, t).containsKey("81"))
+        assertTrue(bus.typed<CarTelemetryMap>(Topic.CAR_TELEMETRY, tt).isNullOrEmpty())
+        session.attachTelemetry(read("CarData.z.jsonStream"))
+        val apart = topic<CarTelemetryMap>(Topic.CAR_TELEMETRY, tt)["81"]
+        val whole = Bus().let { b -> buildSession(files, b).also { it.attachCars(mapOf("Position.z" to read("Position.z.jsonStream"), "CarData.z" to read("CarData.z.jsonStream"))) }; b.typed<CarTelemetryMap>(Topic.CAR_TELEMETRY, tt)!!["81"] }
+        assertEquals(whole, apart)
+    }
+
+    @Test
+    fun `shows a saved outline until the session's own is worked out`() {
+        val saved = CircuitOutline(listOf(Triple(0.0, 0.0, 0.0), Triple(10.0, 0.0, 1.0), Triple(10.0, 10.0, 2.0)), com.racewall.topics.Bounds(0.0, 10.0, 0.0, 10.0), start = 1, sectors = 0 to 2)
+        session.useSavedOutline(saved)
+        assertEquals(saved, bus.typed<CircuitOutline>(Topic.CIRCUIT, 0.0))
+    }
+}
+
+class OutlineTextTest {
+    @Test
+    fun `writes an outline and reads it back the same`() {
+        val o = CircuitOutline(listOf(Triple(-1250.5, 300.0, 12.0), Triple(10.0, -4.25, 0.0)), com.racewall.topics.Bounds(-1250.5, 10.0, -4.25, 300.0), start = 1, sectors = 0 to 1)
+        assertEquals(o, OutlineText.read(OutlineText.write(o)))
+        val bare = o.copy(start = null, sectors = null)
+        assertEquals(bare, OutlineText.read(OutlineText.write(bare)))
+    }
+
+    @Test
+    fun `reads nothing from a damaged file`() {
+        assertNull(OutlineText.read("{\"points\":"))
+        assertNull(OutlineText.read("[]"))
+    }
 }
 
 /** Ported from the desktop's packages/f1-archive/test/laps.test.ts. */

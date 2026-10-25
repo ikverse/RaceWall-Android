@@ -20,7 +20,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -40,10 +39,11 @@ import com.racewall.android.Frame
 import com.racewall.android.R
 import com.racewall.android.Recording
 import com.racewall.android.UiState
+import com.racewall.android.state.PER_PLAYER
+import com.racewall.android.state.VIDEO_QUALITY
 import com.racewall.archive.ArchiveMeeting
 import com.racewall.clock.SPEEDS
 import com.racewall.live.LiveStatus
-import kotlinx.coroutines.launch
 import java.time.Instant
 import java.time.ZoneOffset
 
@@ -53,8 +53,11 @@ interface TransportActions {
     fun seek(t: Double)
     fun setSpeed(speed: Double)
     suspend fun listSeason(year: Int): List<ArchiveMeeting>
-    /** Loads a session and starts playing it. */
-    suspend fun replay(path: String)
+    /**
+     * Loads a session and starts playing it, in the app's own scope: the picker closes as it asks,
+     * and closing it must not cancel the download.
+     */
+    fun replay(path: String)
     suspend fun listRecordings(): List<Recording> = emptyList()
     /** Connects to live timing, or jumps to the live moment when already connected. */
     fun goLive() {}
@@ -95,6 +98,9 @@ fun Transport(
     modifier: Modifier = Modifier,
     /** True while an F1 TV player drives the session clock. */
     videoDriving: Boolean = false,
+    /** The video quality for every player, or null to leave it out when the layout has no player. */
+    videoQuality: String? = null,
+    setVideoQuality: (String) -> Unit = {},
 ) {
     val info = frame.info
     val clock = frame.clock
@@ -116,7 +122,7 @@ fun Transport(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            RwButton(onClick = { setPicker(!pickerOpen) }, label = "Pick a past session", modifier = Modifier.widthIn(max = 340.dp)) { c ->
+            RwButton(onClick = { setPicker(!pickerOpen) }, label = "Pick a past session", modifier = Modifier.widthIn(max = if (narrow) 180.dp else 340.dp)) { c ->
                 Icon(R.drawable.ic_folder, c)
                 BasicText(
                     when {
@@ -126,7 +132,7 @@ fun Transport(
                     },
                     style = Rw.text(12f, c),
                     maxLines = 1,
-                    overflow = TextOverflow.Clip,
+                    overflow = if (narrow) TextOverflow.Ellipsis else TextOverflow.Clip,
                 )
             }
             if (live == null && onNow != null) {
@@ -154,12 +160,13 @@ fun Transport(
             if (live != null) {
                 if (!live.following) {
                     RwButton(onClick = actions::goLive, on = true, label = "Jump to the live moment") { c ->
-                        BasicText("Go live${if (behind > 0) " ($behind s behind)" else ""}", style = Rw.text(12f, c), maxLines = 1)
+                        BasicText(if (narrow) "Go live${if (behind > 0) " −$behind s" else ""}" else "Go live${if (behind > 0) " ($behind s behind)" else ""}", style = Rw.text(12f, c), maxLines = 1)
                     }
                 }
                 if (videoDriving) BasicText("Synced to video", style = Rw.text(12f, Rw.t2), maxLines = 1)
                 else {
-                    BasicText("Delay ${Math.round(live.delayMs / 1000.0)} s", style = Rw.text(12f, Rw.t2), maxLines = 1)
+                    // The delay is still in Settings; here Sync is what is used.
+                    if (!narrow) BasicText("Delay ${Math.round(live.delayMs / 1000.0)} s", style = Rw.text(12f, Rw.t2), maxLines = 1)
                     RwButton(onClick = actions::syncDelay, label = "Sync") { c -> BasicText("Sync", style = Rw.text(12f, c)) }
                 }
             } else {
@@ -170,15 +177,26 @@ fun Transport(
                     label = "Speed",
                 )
             }
+            if (videoQuality != null) {
+                RwSelect(
+                    value = videoQuality,
+                    options = listOf(PER_PLAYER to if (narrow) "Per player" else "Video: per player") + VIDEO_QUALITY.map { (k, name) -> k to if (narrow) name else "Video: $name" },
+                    onChange = setVideoQuality,
+                    label = "Video quality",
+                    maxWidth = if (narrow) 110f else 170f,
+                )
+            }
             val lap = Format.lapText(frame.status)
             val time = frame.utc?.let { "${Format.utcClock(it)} UTC" } ?: Format.elapsed(clock.time)
             BasicText(if (lap.isNotEmpty()) "$lap · $time" else time, style = Rw.text(12f, Rw.t2), modifier = Modifier.widthIn(min = if (narrow) 0.dp else 170.dp), maxLines = 1)
             if (flag != null) BasicText(flag.first, style = Rw.text(12f, flag.second), maxLines = 1)
             Spacer(Modifier.weight(1f, fill = true))
+            // On a narrow screen a long message would squeeze the position bar to nothing.
+            val messageWidth = Modifier.widthIn(max = if (narrow) 200.dp else 420.dp)
             when {
-                ui.loading.isNotEmpty() -> BasicText(ui.loading, style = Rw.text(12f, Rw.t3), maxLines = 1)
-                ui.notice.isNotEmpty() -> BasicText(ui.notice, style = Rw.text(12f, Rw.t3), maxLines = 1)
-                ui.error.isNotEmpty() -> BasicText(ui.error, style = Rw.text(12f, Rw.red), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 420.dp))
+                ui.loading.isNotEmpty() -> BasicText(ui.loading, style = Rw.text(12f, Rw.t3), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = messageWidth)
+                ui.notice.isNotEmpty() -> BasicText(ui.notice, style = Rw.text(12f, Rw.t3), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = messageWidth)
+                ui.error.isNotEmpty() -> BasicText(ui.error, style = Rw.text(12f, Rw.red), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = messageWidth)
             }
             if (sourceText.isNotEmpty() && !narrow) BasicText("Sources: $sourceText", style = Rw.text(12f, Rw.t3), maxLines = 1)
         }
@@ -201,7 +219,6 @@ private fun SessionPicker(actions: TransportActions, onNow: String?, isLive: Boo
     var meetingKey by remember { mutableStateOf<Int?>(null) }
     var sessionPath by remember { mutableStateOf("") }
     var listError by remember { mutableStateOf("") }
-    val scope = rememberCoroutineScope()
 
     LaunchedEffect(year) {
         listError = ""
@@ -276,7 +293,7 @@ private fun SessionPicker(actions: TransportActions, onNow: String?, isLive: Boo
                     val path = sessionPath
                     if (path.isEmpty()) return@RwButton
                     onClose()
-                    scope.launch { actions.replay(path) }
+                    actions.replay(path)
                 },
                 on = onNow == null,
                 enabled = sessionPath.isNotEmpty(),
