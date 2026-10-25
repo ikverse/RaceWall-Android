@@ -49,6 +49,8 @@ import com.racewall.android.ui.Rw
 import com.racewall.android.ui.RwButton
 import com.racewall.android.ui.RwSelect
 import com.racewall.android.ui.RwSlider
+import com.racewall.android.state.PER_PLAYER
+import com.racewall.android.state.videoQuality
 import com.racewall.android.widgets.WidgetScope
 import com.racewall.android.widgets.code
 import com.racewall.f1tv.F1Tv
@@ -73,6 +75,8 @@ class VideoEnv(
     val clockPlay: () -> Unit,
     val clockPause: () -> Unit,
     val clockSeek: (Double) -> Unit,
+    /** The bottom bar's video quality, which overrides each player's own unless it is PER_PLAYER. */
+    val quality: String = PER_PLAYER,
 )
 
 val LocalVideoEnv = staticCompositionLocalOf<VideoEnv?> { null }
@@ -94,6 +98,9 @@ private fun clockText(seconds: Double): String {
 internal fun streamRequest(contentId: Long?, channel: F1Tv.Channel?): String? =
     if (contentId == null || channel == null) null else "$contentId|${channel.channelId ?: "main"}"
 
+/** What an Onboard panel plays while no driver with a camera is focused: nothing. */
+private const val NO_STREAM = "none"
+
 /** Debug builds only: what the panel does, never tokens or full stream addresses. */
 private fun debugLog(text: String) {
     if (com.racewall.android.BuildConfig.DEBUG) android.util.Log.d("RaceWallVideo", text)
@@ -103,10 +110,13 @@ private fun debugLog(text: String) {
  * An F1 TV player, as the desktop's VideoPanel.svelte. Plays the video of whatever session RaceWall
  * has loaded, on the channel the panel is set to, with the user's own subscription. Tap the picture
  * for its controls; they hide again on their own.
+ *
+ * As an `onboard` panel it always shows the focused driver's onboard camera, follows the other
+ * players and never drives the clock; with no driver focused, or none with a camera, it shows nothing.
  */
 @OptIn(UnstableApi::class)
 @Composable
-fun VideoPanel(s: WidgetScope) {
+fun VideoPanel(s: WidgetScope, onboard: Boolean = false) {
     val env = LocalVideoEnv.current ?: return
     val hub = env.hub
     val panelId = s.panelId
@@ -124,7 +134,8 @@ fun VideoPanel(s: WidgetScope) {
     val isLive = env.session?.live != null
     val isMain = hub.main == panelId
     val alone = panelId in hub.alone
-    val setting = s.values.str("channel").ifEmpty { if (hub.main == panelId || hub.main == null) "main" else "focus" }
+    val setting = if (onboard) "focus" else s.values.str("channel").ifEmpty { if (hub.main == panelId || hub.main == null) "main" else "focus" }
+    val quality = videoQuality(env.quality, s.values.str("quality"))
     val volume = s.values.numOr("volume", 1.0).coerceIn(0.0, 1.0)
     val contentId = videos.firstOrNull()?.contentId
     val offset = contentId?.let { env.offsets[it.toString()] }
@@ -133,6 +144,7 @@ fun VideoPanel(s: WidgetScope) {
     val channel = details?.let { d ->
         fun obc(n: String?) = d.channels.firstOrNull { it.type == "obc" && it.racingNumber == n }
         when {
+            onboard -> obc(s.focus)
             setting == "focus" -> obc(s.focus) ?: d.channels[0]
             setting.startsWith("obc:") -> obc(setting.removePrefix("obc:")) ?: d.channels[0]
             setting.startsWith("ch:") -> d.channels.firstOrNull { it.channelId?.toString() == setting.removePrefix("ch:") } ?: d.channels[0]
@@ -181,7 +193,7 @@ fun VideoPanel(s: WidgetScope) {
         }
     }
     DisposableEffect(panelId) {
-        hub.register(panelId, handle)
+        hub.register(panelId, handle, canLead = !onboard)
         onDispose {
             hub.unregister(panelId)
             player.release()
@@ -215,10 +227,20 @@ fun VideoPanel(s: WidgetScope) {
         }
     }
 
+    // Slower connections: the tallest picture to play, changed without reloading.
+    LaunchedEffect(quality) { player.setQuality(quality) }
+
     // Load the stream whenever the video or channel changes.
     var streamKey by remember { mutableStateOf("") }
-    LaunchedEffect(streamRequest(contentId, channel)) {
+    LaunchedEffect(streamRequest(contentId, channel) ?: if (onboard && details != null) NO_STREAM else null) {
         val id = contentId ?: return@LaunchedEffect
+        // An Onboard panel with no driver focused, or one without a camera, stops and shows nothing.
+        if (onboard && details != null && channel == null) {
+            if (player.loaded) player.unload()
+            if (streamKey.isNotEmpty()) streamKey = NO_STREAM
+            problem = ""
+            return@LaunchedEffect
+        }
         val ch = channel ?: return@LaunchedEffect
         val k = streamRequest(id, ch) ?: return@LaunchedEffect
         if (k == streamKey) return@LaunchedEffect
@@ -311,7 +333,7 @@ fun VideoPanel(s: WidgetScope) {
     // Header text.
     val synced = if (isLive) "clock follows this" else if (offset != null) "synced" else "not synced yet"
     val following = if (isMain) synced else "follows the timing"
-    hub.metas[panelId] = listOf(
+    hub.metas[panelId] = if (onboard && channel == null) "" else listOf(
         channel?.name ?: "",
         if (alone) "${if (isMain && !isLive) "$synced · " else ""}on its own · press play below to rejoin" else following,
     ).filter { it.isNotEmpty() }.joinToString(" · ")
@@ -354,7 +376,10 @@ fun VideoPanel(s: WidgetScope) {
                 )
             },
         )
+        /** An Onboard panel with no focused driver to show, which stays empty. */
+        val idle = onboard && (s.focus == null || (details != null && channel == null))
         val message = when {
+            idle -> ""
             problem.isNotEmpty() -> problem
             details == null -> if (env.session != null) "Finding the F1 TV video…" else "Pick a session to watch."
             else -> ""
@@ -364,10 +389,11 @@ fun VideoPanel(s: WidgetScope) {
                 BasicText(message, style = Rw.text(13f, Rw.t3).copy(textAlign = TextAlign.Center))
             }
         }
-        if ((controls || (isMain && view.paused && details != null)) && details != null) {
+        if ((controls || (isMain && view.paused && details != null)) && details != null && !idle) {
             Controls(
                 view = view,
                 setting = setting,
+                onboard = onboard,
                 details = details!!,
                 drivers = { code(s.frame.drivers, it) },
                 audible = hub.audible == panelId,
@@ -411,6 +437,8 @@ private data class View(val paused: Boolean = true, val current: Double = 0.0, v
 private fun Controls(
     view: View,
     setting: String,
+    /** An Onboard panel: its channel is the focused driver's, and it never leads. */
+    onboard: Boolean,
     details: F1Tv.Details,
     drivers: (String) -> String,
     audible: Boolean,
@@ -458,10 +486,12 @@ private fun Controls(
             RwButton(onClick = { onTouch(); onSeek(view.current - 10) }, label = "Back 10 seconds", modifier = Modifier.height(26.dp)) { c -> BasicText("−10 s", style = Rw.text(13f, c)) }
             RwButton(onClick = { onTouch(); onSeek(view.current + 10) }, label = "Forward 10 seconds", modifier = Modifier.height(26.dp)) { c -> BasicText("+10 s", style = Rw.text(13f, c)) }
             if (view.live && behind > 5) RwButton(onClick = { onTouch(); onSeek(view.end) }, label = "Live", modifier = Modifier.height(26.dp)) { _ -> BasicText("Live", style = Rw.text(13f, Rw.t1)) }
-            RwSelect(setting, options, { onTouch(); onChannel(it) }, "Channel", fontSize = 13f, maxWidth = 200f)
+            if (!onboard) RwSelect(setting, options, { onTouch(); onChannel(it) }, "Channel", fontSize = 13f, maxWidth = 200f)
             RwButton(onClick = { onTouch(); onSound() }, label = if (audible) "Mute" else "Unmute", modifier = Modifier.height(26.dp)) { c -> Icon(if (audible) R.drawable.ic_speaker else R.drawable.ic_mute, c) }
-            if (!isMain) RwButton(onClick = { onTouch(); onMain() }, label = "Make main", modifier = Modifier.height(26.dp)) { c -> BasicText("Make main", style = Rw.text(13f, c)) }
-            else if (!isLive) RwButton(onClick = { onTouch(); onMarkStart() }, label = "Mark the start", modifier = Modifier.height(26.dp)) { c -> BasicText("Mark the start", style = Rw.text(13f, c)) }
+            if (!onboard) {
+                if (!isMain) RwButton(onClick = { onTouch(); onMain() }, label = "Make main", modifier = Modifier.height(26.dp)) { c -> BasicText("Make main", style = Rw.text(13f, c)) }
+                else if (!isLive) RwButton(onClick = { onTouch(); onMarkStart() }, label = "Mark the start", modifier = Modifier.height(26.dp)) { c -> BasicText("Mark the start", style = Rw.text(13f, c)) }
+            }
             Spacer(Modifier.width(8.dp))
             RwSlider(volume, 0.0, 1.0, 0.05, { onTouch(); onVolume(it) }, "Volume of this player", Modifier.width(80.dp))
             RwButton(onClick = { onTouch(); onFullscreen() }, label = if (fullscreen) "Leave full screen" else "Full screen", modifier = Modifier.height(26.dp)) { c ->

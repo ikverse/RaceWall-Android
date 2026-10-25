@@ -50,6 +50,9 @@ object RadioPlayer {
         private set
     var duration by mutableStateOf(0L)
         private set
+    /** The clip stopped where it was when the app left the screen; its button carries on from there. */
+    var paused by mutableStateOf(false)
+        private set
 
     fun play(context: Context, url: String, volume: Float) {
         stop()
@@ -73,8 +76,21 @@ object RadioPlayer {
         player?.release()
         player = null
         playing = ""
+        paused = false
         position = 0
         duration = 0
+    }
+
+    fun pause() {
+        val p = player ?: return
+        p.pause()
+        paused = true
+    }
+
+    fun resume() {
+        val p = player ?: return
+        p.play()
+        paused = false
     }
 
     fun setVolume(v: Float) {
@@ -154,13 +170,20 @@ val TeamRadioWidget = WidgetSpec(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
+                    val stoppable = on && !RadioPlayer.paused
                     RwButton(
-                        onClick = { if (on) RadioPlayer.stop() else RadioPlayer.play(context, c.url, volume) },
+                        onClick = {
+                            when {
+                                stoppable -> RadioPlayer.stop()
+                                on -> RadioPlayer.resume()
+                                else -> RadioPlayer.play(context, c.url, volume)
+                            }
+                        },
                         on = on,
-                        label = "${if (on) "Stop" else "Play"} $name radio",
+                        label = "${if (stoppable) "Stop" else "Play"} $name radio",
                         horizontalPadding = 0f,
                         modifier = Modifier.width(26.dp).height(24.dp),
-                    ) { colour -> Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { Icon(if (on) R.drawable.ic_stop else R.drawable.ic_play, colour, 11f) } }
+                    ) { colour -> Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { Icon(if (stoppable) R.drawable.ic_stop else R.drawable.ic_play, colour, 11f) } }
                     Column(Modifier.weight(1f)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Box(Modifier.size(3.dp, 13.dp).background(teamColour(s.frame.drivers, c.number), RoundedCornerShape(1.dp)))

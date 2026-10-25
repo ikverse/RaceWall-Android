@@ -19,6 +19,7 @@ import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -170,7 +171,9 @@ fun PanelCanvas(
         grab.resize = { panel, dx, dy, start -> drag(panel, true, dx, dy, start) }
         grab.end = ::dragEnd
 
-        for (panel in layout.panels) {
+        // Keyed by id: a panel's touch handling, popover and player stay with it when panels before
+        // it are removed or the layout changes.
+        for (panel in layout.panels) key(panel.id) {
             val spec = widget(panel.widget)
             val title = spec?.title ?: panel.widget
             val collapsed = panel.collapsed == true
@@ -264,6 +267,10 @@ private fun PanelFrame(
     val shape = RoundedCornerShape(6.dp)
     val editNow by rememberUpdatedState(edit)
     val panelNow by rememberUpdatedState(panel)
+    // The gesture below keeps running across recompositions, so it reads the callbacks as they are now.
+    val headerDrag by rememberUpdatedState(onHeaderDrag)
+    val dragEnd by rememberUpdatedState(onDragEnd)
+    val arm by rememberUpdatedState(onArm)
     val header = remember { Place() }
     Column(
         Modifier
@@ -297,40 +304,41 @@ private fun PanelFrame(
                         // Finger positions on the screen: the header moves with the panel, so its own
                         // positions would jump back by a cell each time the panel moves one.
                         val from = header.onScreen(down.position)
+                        // Only the finger that started it moves the panel; a second finger or a palm does not.
                         if (editNow) {
                             while (true) {
                                 val e = awaitPointerEvent()
-                                val c = e.changes.firstOrNull() ?: break
+                                val c = e.changes.firstOrNull { it.id == down.id } ?: break
                                 if (!c.pressed) break
                                 c.consume()
                                 val d = header.onScreen(c.position) - from
-                                onHeaderDrag(d.x, d.y, start)
+                                headerDrag(d.x, d.y, start)
                             }
-                            onDragEnd()
+                            dragEnd()
                             return@awaitEachGesture
                         }
                         val armedAt = down.uptimeMillis + HOLD_MS
                         var armed = false
                         while (true) {
                             val e = awaitPointerEvent()
-                            val c = e.changes.firstOrNull() ?: return@awaitEachGesture
+                            val c = e.changes.firstOrNull { it.id == down.id } ?: return@awaitEachGesture
                             if (!c.pressed) return@awaitEachGesture
                             val moved = c.position - down.position
                             if (!armed && c.uptimeMillis >= armedAt) armed = true
                             if (hypot(moved.x, moved.y) < HOLD_SLOP * density) continue
                             if (!armed) return@awaitEachGesture
-                            onArm()
+                            arm()
                             c.consume()
-                            onHeaderDrag(moved.x, moved.y, start)
+                            headerDrag(moved.x, moved.y, start)
                             while (true) {
                                 val m = awaitPointerEvent()
-                                val mc = m.changes.firstOrNull() ?: break
+                                val mc = m.changes.firstOrNull { it.id == down.id } ?: break
                                 if (!mc.pressed) break
                                 mc.consume()
                                 val d = header.onScreen(mc.position) - from
-                                onHeaderDrag(d.x, d.y, start)
+                                headerDrag(d.x, d.y, start)
                             }
-                            onDragEnd()
+                            dragEnd()
                             return@awaitEachGesture
                         }
                     }

@@ -3,6 +3,8 @@ package com.racewall.android.widgets
 import com.racewall.android.Format
 import com.racewall.android.Mode
 import com.racewall.android.state.F1TV_WIDGET
+import com.racewall.android.state.ONBOARD_WIDGET
+import com.racewall.android.state.VIDEO_QUALITY
 import com.racewall.android.ui.TimingSettings
 import com.racewall.android.ui.TimingTower
 import com.racewall.topics.Topic
@@ -40,6 +42,9 @@ val TimingWidget = WidgetSpec(
 /** The players' coordination, for the F1 TV panels' header text. Set by the app. */
 var videoHub: com.racewall.android.video.VideoHub? = null
 
+/** A player's own video quality, which the bottom bar's can override. */
+private val QUALITY_FIELD = Field.Select("quality", "Video quality", VIDEO_QUALITY, "auto", note = "Lower for a slower connection")
+
 /**
  * The F1 TV player. Part of the app rather than a plugin, as on the desktop, because it needs the
  * sign-in and protected-video playback; it is listed with the widgets all the same.
@@ -50,12 +55,28 @@ val F1TvWidget = WidgetSpec(
     min = 10 to 7,
     size = 26 to 18,
     reads = setOf(Topic.SESSION_INFO, Topic.DRIVERS_LIST),
+    fields = listOf(QUALITY_FIELD),
     meta = { s -> videoHub?.metas?.get(s.panelId) ?: "" },
 ) { s -> com.racewall.android.video.VideoPanel(s) }
+
+/**
+ * The focused driver's onboard camera: an F1 TV player that follows the others and never drives the
+ * clock, and shows nothing while no driver is focused.
+ */
+val OnboardWidget = WidgetSpec(
+    id = ONBOARD_WIDGET,
+    title = "Onboard",
+    min = 8 to 6,
+    size = 16 to 10,
+    reads = setOf(Topic.SESSION_INFO, Topic.DRIVERS_LIST),
+    fields = listOf(QUALITY_FIELD),
+    meta = { s -> videoHub?.metas?.get(s.panelId) ?: "" },
+) { s -> com.racewall.android.video.VideoPanel(s, onboard = true) }
 
 /** Every built-in widget, in the order the Add widget menu lists them. */
 val WIDGETS: List<WidgetSpec> = listOf(
     F1TvWidget,
+    OnboardWidget,
     TimingWidget,
     TrackMapWidget,
     RaceControlWidget,
@@ -77,5 +98,5 @@ fun widget(id: String): WidgetSpec? = BY_ID[id]
 /** What the window always shows, whatever the layout. */
 val SHELL_TOPICS = setOf(Topic.SESSION_INFO, Topic.SESSION_STATUS, Topic.DRIVERS_LIST)
 
-/** The F1 TV player is listed with the widgets, as on the desktop. */
-fun isVideo(id: String) = id == F1TV_WIDGET
+/** The F1 TV players, F1 TV and Onboard, are listed with the widgets, as on the desktop. */
+fun isVideo(id: String) = id == F1TV_WIDGET || id == ONBOARD_WIDGET

@@ -46,7 +46,7 @@ class TransportTest {
             this.speed = speed
         }
         override suspend fun listSeason(year: Int): List<ArchiveMeeting> = BritishGp.meetings
-        override suspend fun replay(path: String) {
+        override fun replay(path: String) {
             replayed = path
         }
     }
@@ -128,5 +128,7 @@ class TransportTest {
         compose.onNodeWithContentDescription("Replay").performClick()
         compose.waitUntil(5_000) { a.replayed != null }
         assertEquals("2025/2025-07-06_British_Grand_Prix/2025-07-05_Qualifying/", a.replayed)
+        // The picker has closed; the load is the app's, so closing it cannot stop the load.
+        compose.onNodeWithContentDescription("Replay").assertDoesNotExist()
     }
 }

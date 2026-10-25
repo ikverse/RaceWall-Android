@@ -38,7 +38,9 @@ class Updater(
     private val current: String,
     private val dir: File,
     private val fetcher: Fetcher = OkHttpFetcher(answerErrors = true),
-    private val releases: String = "https://api.github.com/repos/ikverse/RaceWall/releases?per_page=20",
+    // The Android builds are released with the Android app's own repository, which must be public:
+    // GitHub answers 404 to anyone not signed in to a private one.
+    private val releases: String = "https://api.github.com/repos/ikverse/RaceWall-Android/releases?per_page=20",
     private val client: OkHttpClient = OkHttpClient(),
 ) {
     private val _status = MutableStateFlow(UpdateStatus())
@@ -79,6 +81,7 @@ class Updater(
         } catch (e: Exception) {
             return set(UpdateStatus("error", "Could not check for updates: ${e.message}"))
         }
+        if (res.status == 404) return set(UpdateStatus("error", "Could not check for updates: the RaceWall release page is not public."))
         if (!res.ok) return set(UpdateStatus("error", "Could not check for updates (GitHub answered ${res.status})."))
         val r = latest(runCatching { FeedJson.parse(res.body ?: "[]") }.getOrNull())
         if (r == null || !newer(r.version, current)) return set(UpdateStatus("current", "RaceWall is up to date."))
