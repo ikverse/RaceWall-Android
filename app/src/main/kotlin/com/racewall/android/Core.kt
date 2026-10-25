@@ -25,6 +25,7 @@ import com.racewall.live.LiveHandlers
 import com.racewall.live.LiveStatus
 import com.racewall.live.Recorder
 import com.racewall.openf1.OpenF1
+import com.racewall.topics.CircuitOutline
 import com.racewall.topics.DriverList
 import com.racewall.topics.LapHistory
 import com.racewall.topics.Laps
@@ -188,6 +189,8 @@ class Core(
         var lastFlag: TrackFlag? = null,
         /** Wall time the feed last said the session ended, if it did. */
         var endedAt: Long? = null,
+        /** Whether this session's own outline has been saved for the next session at the circuit. */
+        var outlineSaved: Boolean = false,
     )
 
     val bus = Bus()
@@ -264,6 +267,15 @@ class Core(
             if (l.following && !clock.playing) clock.play()
             if (l.following && abs(clock.time - edge) > 250) clock.seek(edge)
             updateMeta()
+            // Live works its outline out after a clean lap; once it has, keep it for the next session here.
+            if (!l.outlineSaved) {
+                val file = outlineFile(l.model.info)
+                val outline = file?.let { l.model.outlineNow() }
+                if (file != null && outline != null) {
+                    l.outlineSaved = true
+                    scope.launch(Dispatchers.IO) { writeOutline(file, outline) }
+                }
+            }
             val status = bus.typed<SessionStatus>(Topic.SESSION_STATUS, clock.time)
             if (status != null && status.flag != l.lastFlag) {
                 if (l.lastFlag != null) onFlag(status.flag, l.model.info)
@@ -375,15 +387,40 @@ class Core(
         backups.clear()
         bus.setOrder(order)
         // A replay shows the circuit saved from an earlier session there while its own cars load.
-        if (live == null) outlineFile(s.info)?.takeIf { it.isFile }?.let { f -> runCatching { OutlineText.read(f.readText()) }.getOrNull()?.let(s::useSavedOutline) }
+        if (live == null) useSavedOutline(s)
         scope.launch { loadJolpica(s.info) }
     }
 
     /** Where the outline of this session's circuit is saved: one per circuit and season. */
-    private fun outlineFile(info: SessionInfo): File? {
+    private fun outlineFile(info: SessionInfo, year: Int = info.year): File? {
         val dir = circuits ?: return null
-        if (info.year == 0 || info.circuit.isEmpty()) return null
-        return File(dir, "${info.year}-${info.circuit.replace(Regex("[^A-Za-z0-9]+"), "_")}.json")
+        if (year == 0 || info.circuit.isEmpty()) return null
+        return File(dir, "$year-${info.circuit.replace(Regex("[^A-Za-z0-9]+"), "_")}.json")
+    }
+
+    private fun readOutline(f: File): CircuitOutline? = f.takeIf { it.isFile }?.let { runCatching { OutlineText.read(it.readText()) }.getOrNull() }
+
+    private fun writeOutline(f: File, o: CircuitOutline) {
+        runCatching { f.parentFile?.mkdirs(); f.writeText(OutlineText.write(o)) }
+    }
+
+    /**
+     * The outline saved at this circuit this season or, as a circuit rarely changes, the newest
+     * earlier season's.
+     */
+    private fun savedOutline(info: SessionInfo): CircuitOutline? {
+        val own = outlineFile(info) ?: return null
+        readOutline(own)?.let { return it }
+        val name = own.name.removePrefix("${info.year}")
+        return own.parentFile?.listFiles().orEmpty()
+            .mapNotNull { f -> f.name.takeIf { it.endsWith(name) }?.removeSuffix(name)?.takeIf { it.length == 4 && it.all(Char::isDigit) }?.toInt() }
+            .filter { it < info.year }
+            .sortedDescending()
+            .firstNotNullOfOrNull { year -> outlineFile(info, year)?.let(::readOutline) }
+    }
+
+    private fun useSavedOutline(s: SessionModel) {
+        savedOutline(s.info)?.let(s::useSavedOutline)
     }
 
     private suspend fun loadJolpica(info: SessionInfo) {
@@ -415,9 +452,7 @@ class Core(
                 s.attachPositions(positions)
                 s.outlineNow()
             }
-            if (outline != null) outlineFile(s.info)?.let { f ->
-                withContext(Dispatchers.IO) { runCatching { f.parentFile?.mkdirs(); f.writeText(OutlineText.write(outline)) } }
-            }
+            if (outline != null) outlineFile(s.info)?.let { f -> withContext(Dispatchers.IO) { writeOutline(f, outline) } }
             tick()
             say("Loading telemetry…")
             val telemetry = file("CarData.z")
@@ -544,6 +579,8 @@ class Core(
                 if (path != null && state.path != null && path != state.path) freshLive(state)
                 if (path != null) state.path = path
                 state.model.add("SessionInfo", (utc - state.base).toDouble(), data)
+                // Live, the circuit is known only now: show the one saved from an earlier session there.
+                useSavedOutline(state.model)
                 startRecording(state, data)
                 return@synchronized
             }
@@ -584,6 +621,7 @@ class Core(
         state.following = true
         state.lastFlag = null
         state.endedAt = null
+        state.outlineSaved = false
         useSession(state.model)
         clock.load(0.0, 0.0, 0.0)
         clock.play()

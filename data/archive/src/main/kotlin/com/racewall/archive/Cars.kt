@@ -123,6 +123,12 @@ private class Series(width: Int, withFlag: Boolean = false) {
 private const val STALE_MS = 5000.0
 
 /**
+ * The shortest drive that can be a lap, in position units (tenths of a metre): 1.5 km, under half
+ * of Monaco. Cars waiting on the grid twitch by a unit or two and would otherwise "close" a lap.
+ */
+private const val MIN_LAP_LENGTH = 15_000.0
+
+/**
  * Car data that grows as payloads arrive. `utcToT` turns a sample's UTC milliseconds into session
  * time (NaN when there is no anchor yet).
  */
@@ -229,9 +235,9 @@ class CarData(private val utcToT: (Double) -> Double) {
 
     /**
      * One lap of the racing line. A clean lap closes on itself: its last point is next to its first,
-     * and it covers about a lap's distance. A parked car "closes" too, and a car through the pit lane
-     * or behind the safety car drives a different distance, so only cars near the typical distance
-     * count.
+     * and it covers about a lap's distance. A parked car "closes" too, so a lap must be long enough
+     * to be one; a car through the pit lane or behind the safety car drives a different distance, so
+     * only cars near the typical distance count.
      */
     @Synchronized
     fun outline(fromT: Double, lapMs: Double): CircuitOutline? {
@@ -259,7 +265,7 @@ class CarData(private val utcToT: (Double) -> Double) {
                 if (s.flag(i)) on += 1.0
                 if (i > a) length += hypot(s.v(0, i) - s.v(0, i - 1), s.v(1, i) - s.v(1, i - 1))
             }
-            if (on < (b - a) * 0.95) continue
+            if (on < (b - a) * 0.95 || length < MIN_LAP_LENGTH) continue
             candidates.add(Candidate(s, a, b, length, gap))
         }
         val lengths = candidates.map { it.length }.sorted()

@@ -175,6 +175,33 @@ class CarDataBuildTest {
     }
 
     @Test
+    fun `finds no circuit in cars waiting on the grid, and one in a lap driven`() {
+        // 20 cars, four samples a second for two minutes: parked, twitching by a unit, as before a start.
+        val cars = CarData { it }
+        fun sample(t: Long, place: (Int) -> Pair<Double, Double>) = mapOf(
+            "Position" to listOf(
+                mapOf(
+                    "Timestamp" to Instant.ofEpochMilli(t).toString(),
+                    "Entries" to (0 until 20).associate { car ->
+                        val (x, y) = place(car)
+                        "${car + 1}" to mapOf("Status" to "OnTrack", "X" to x, "Y" to y, "Z" to 0.0)
+                    },
+                ),
+            ),
+        )
+        for (t in 0L until 120_000L step 250) cars.addPosition(sample(t) { car -> car * 80.0 + (if (t % 500 != 0L) 1 else 0) to 0.0 })
+        assertNull(cars.outline(0.0, 90_000.0))
+        // Then every car drives round a 5 km circle in 90 seconds.
+        val r = 50_000 / (2 * Math.PI)
+        for (t in 120_000L until 240_000L step 250) {
+            val a = (t - 120_000) / 90_000.0 * 2 * Math.PI
+            cars.addPosition(sample(t) { car -> Math.round(r * Math.cos(a + car / 100.0)).toDouble() to Math.round(r * Math.sin(a + car / 100.0)).toDouble() })
+        }
+        val outline = cars.outline(120_000.0, 90_000.0)!!
+        assertTrue(outline.bounds.maxX - outline.bounds.minX > 15_000)
+    }
+
+    @Test
     fun `skips damaged and empty lines`() {
         val good = read("Position.z.jsonStream").lineSequence().first { '"' in it }
         val text = "﻿$good\n\n00:00:01.000\"not base64 at all!\"\r\n$good"
