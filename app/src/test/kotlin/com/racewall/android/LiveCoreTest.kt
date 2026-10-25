@@ -12,9 +12,12 @@ import com.racewall.android.ui.RaceWallTheme
 import com.racewall.android.ui.Transport
 import com.racewall.android.ui.TransportActions
 import com.racewall.archive.ArchiveMeeting
+import com.racewall.archive.OutlineText
 import com.racewall.clock.ClockState
 import com.racewall.live.LiveHandlers
 import com.racewall.live.LiveStatus
+import com.racewall.topics.Bounds
+import com.racewall.topics.CircuitOutline
 import com.racewall.topics.Positions
 import com.racewall.topics.SessionInfo
 import com.racewall.topics.Topic
@@ -48,12 +51,13 @@ class LiveCoreTest {
     private val quali = "2026/2026-10-11_Singapore_Grand_Prix/2026-10-10_Qualifying/"
     private val race = "2026/2026-10-11_Singapore_Grand_Prix/2026-10-11_Race/"
 
-    private class Setup(val core: Core, val feed: LiveHandlers, val wall: () -> Long, val advance: (Long) -> Unit, val recordings: java.io.File)
+    private class Setup(val core: Core, val feed: LiveHandlers, val wall: () -> Long, val advance: (Long) -> Unit, val recordings: java.io.File, val circuits: java.io.File)
 
     private fun connect(): Setup {
         var wall = 1_760_000_000_000L
         var handlers: LiveHandlers? = null
         val dir = Files.createTempDirectory("racewall-core").toFile()
+        val circuits = Files.createTempDirectory("racewall-circuits").toFile()
         val core = Core(
             BritishGp.archive(),
             CoroutineScope(SupervisorJob() + Dispatchers.Unconfined),
@@ -69,10 +73,61 @@ class LiveCoreTest {
                     override val lastMessage = 0L
                 }
             },
+            circuits = circuits,
         )
         core.subscribe(setOf(Topic.TIMING_POSITIONS, Topic.SESSION_INFO))
         core.goLive(null)
-        return Setup(core, handlers!!, { wall }, { wall += it }, dir)
+        return Setup(core, handlers!!, { wall }, { wall += it }, dir, circuits)
+    }
+
+    private fun outline(core: Core) = core.bus.answer(Topic.CIRCUIT, 0.0)?.value as CircuitOutline?
+    private fun square(size: Double) = CircuitOutline(
+        listOf(Triple(0.0, 0.0, 0.0), Triple(size, 0.0, 0.0), Triple(size, size, 0.0), Triple(0.0, size, 0.0)),
+        Bounds(0.0, size, 0.0, size),
+    )
+
+    @Test
+    fun `shows the circuit saved this season at once, or else the newest earlier season's`() {
+        val s = connect()
+        fun save(name: String, o: CircuitOutline) = s.circuits.resolve(name).writeText(OutlineText.write(o))
+        save("2024-Singapore.json", square(1.0))
+        save("2025-Singapore.json", square(2.0))
+        save("2027-Singapore.json", square(9.0))
+        save("2025-Monza.json", square(5.0))
+        assertNull(outline(s.core))
+        s.feed.snapshot("SessionInfo", info("Qualifying", quali))
+        assertEquals(square(2.0), outline(s.core))
+
+        save("2026-Singapore.json", square(3.0))
+        s.feed.message("SessionInfo", info("Race", race), s.wall())
+        assertEquals(square(3.0), outline(s.core))
+        s.core.stopLive()
+    }
+
+    @Test
+    fun `saves the outline live timing works out, for the next session at the circuit`() {
+        val s = connect()
+        s.feed.snapshot("SessionInfo", info("Race", race))
+        s.feed.snapshot("SessionStatus", mapOf("Status" to "Started"))
+        // Every car round a 5 km circle in 100 seconds, four samples a second, for seven minutes.
+        val base = s.wall()
+        val r = 50_000 / (2 * Math.PI)
+        for (t in 0L until 420_000L step 250) {
+            val a = t / 100_000.0 * 2 * Math.PI
+            val entries = listOf("1", "4", "16", "63").withIndex().associate { (i, n) ->
+                n to mapOf("Status" to "OnTrack", "X" to Math.round(r * Math.cos(a + i / 50.0)), "Y" to Math.round(r * Math.sin(a + i / 50.0)), "Z" to 0L)
+            }
+            s.feed.message("Position.z", mapOf("Position" to listOf(mapOf("Timestamp" to java.time.Instant.ofEpochMilli(base + t).toString(), "Entries" to entries))), base + t)
+        }
+        val file = s.circuits.resolve("2026-Singapore.json")
+        assertFalse(file.exists())
+        s.core.tick()
+        // The file is written off the main thread.
+        val until = System.currentTimeMillis() + 5_000
+        while (!file.exists() && System.currentTimeMillis() < until) Thread.sleep(20)
+        val saved = OutlineText.read(file.readText())!!
+        assertTrue(saved.bounds.maxX - saved.bounds.minX > 15_000)
+        s.core.stopLive()
     }
 
     private fun positions(core: Core) = (core.bus.answer(Topic.TIMING_POSITIONS, Double.MAX_VALUE)?.value as? Positions ?: emptyList())
