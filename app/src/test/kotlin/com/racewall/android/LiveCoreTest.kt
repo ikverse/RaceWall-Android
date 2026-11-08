@@ -56,13 +56,13 @@ class LiveCoreTest {
 
     private class Setup(val core: Core, val feed: LiveHandlers, val wall: () -> Long, val advance: (Long) -> Unit, val recordings: java.io.File, val circuits: java.io.File)
 
-    private fun connect(bundled: (Int) -> String? = { null }): Setup {
+    private fun connect(archive: com.racewall.archive.Archive = BritishGp.archive(), bundled: (Int) -> String? = { null }): Setup {
         var wall = 1_760_000_000_000L
         var handlers: LiveHandlers? = null
         val dir = Files.createTempDirectory("racewall-core").toFile()
         val circuits = Files.createTempDirectory("racewall-circuits").toFile()
         val core = Core(
-            BritishGp.archive(),
+            archive,
             CoroutineScope(SupervisorJob() + Dispatchers.Unconfined),
             now = { wall },
             openF1 = null,
@@ -249,6 +249,48 @@ class LiveCoreTest {
         runBlocking { s.core.loadSession(list[0].path) }
         assertEquals("Race", s.core.ui.value.session?.info?.name)
         s.recordings.deleteRecursively()
+    }
+
+    @Test
+    fun `fills in the laps before RaceWall joined from its own recording, without listing a lap twice`() {
+        // The archive keeps the session's files back while it is on.
+        val s = connect(com.racewall.archive.Archive(com.racewall.archive.Fetcher { _, _ -> com.racewall.archive.HttpResult(404, null) }))
+        val folder = s.recordings.resolve(race.trimEnd('/'))
+        folder.mkdirs()
+        fun line(ms: Long, json: String) = "${java.time.Instant.ofEpochMilli(ms).toString().substring(11, 19)}.${(ms % 1000).toString().padStart(3, '0')}$json"
+        val records = mutableListOf(line(0, """{"Lines":{"1":{"NumberOfLaps":0},"4":{"NumberOfLaps":0}},"_kf":true}"""))
+        for (lap in 1..3) for ((n, ms) in listOf("1" to 90_000L, "4" to 90_400L)) {
+            records.add(line(lap * ms, """{"Lines":{"$n":{"NumberOfLaps":$lap,"Sectors":{"2":{"Value":"30.000"}},"LastLapTime":{"Value":"1:3$lap.000"}}}}"""))
+        }
+        folder.resolve("TimingData.jsonStream").writeText("\uFEFF" + records.joinToString("\r\n") + "\r\n")
+        // The recording began 10 minutes before RaceWall joined now, as both cars finish lap 3.
+        folder.resolve("recording.json").writeText("""{"baseUtc":"${java.time.Instant.ofEpochMilli(s.wall() - 600_000)}"}""")
+        s.feed.snapshot("SessionInfo", info("Race", race))
+        s.feed.snapshot("TimingData", mapOf("Lines" to mapOf("1" to mapOf("NumberOfLaps" to 3L, "LastLapTime" to mapOf("Value" to "1:33.000")), "4" to mapOf("NumberOfLaps" to 3L, "LastLapTime" to mapOf("Value" to "1:33.000")))))
+        s.core.tick()
+        val deadline = System.currentTimeMillis() + 10_000
+        fun history() = s.core.bus.typed<com.racewall.topics.LapHistory>(Topic.LAP_HISTORY, Double.MAX_VALUE)
+        while (history()?.get("1")?.size != 3 && System.currentTimeMillis() < deadline) Thread.sleep(20)
+        assertEquals(listOf(1, 2, 3), history()?.get("1")?.map { it.lap })
+        assertEquals(listOf(1, 2, 3), history()?.get("4")?.map { it.lap })
+        s.core.stopLive()
+        s.recordings.deleteRecursively()
+    }
+
+    @Test
+    fun `works a keyed topic out again only when its key changes`() {
+        val s = connect()
+        var key = 1
+        var calls = 0
+        s.core.bus.provide("x.topic", com.racewall.bus.TopicProvider("x", { calls++; key }, version = { key }))
+        s.core.subscribe(setOf(Topic.TIMING_POSITIONS, Topic.SESSION_INFO, "x.topic"))
+        repeat(5) { s.core.tick() }
+        assertEquals(1, calls)
+        key = 2
+        s.core.tick()
+        assertEquals(2, calls)
+        assertEquals(2, s.core.frame.value.topics["x.topic"])
+        s.core.stopLive()
     }
 
     @Test

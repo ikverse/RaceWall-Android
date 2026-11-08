@@ -79,6 +79,11 @@ class CoreViewModel(app: Application) : AndroidViewModel(app), AppActions {
         bundled = { key -> runCatching { app.assets.open("circuits/$key.json").bufferedReader().use { it.readText() } }.getOrNull() },
     )
 
+    /** Told when the network comes back or changes, while the app runs; let go in onCleared. */
+    private val connectivity = app.getSystemService(ConnectivityManager::class.java)
+    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) = core.networkChanged()
+    }
     private val settingsStore = JsonStore(File(app.filesDir, "settings.json"))
     private val layoutsStore = JsonStore(File(app.filesDir, "layouts.json"))
     private val _settings = MutableStateFlow(
@@ -146,9 +151,7 @@ class CoreViewModel(app: Application) : AndroidViewModel(app), AppActions {
             }
         }
         // A network that comes back, or a switch from Wi-Fi to mobile data, reconnects live timing at once.
-        app.getSystemService(ConnectivityManager::class.java)?.registerDefaultNetworkCallback(object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) = core.networkChanged()
-        })
+        connectivity?.registerDefaultNetworkCallback(networkCallback)
     }
 
     /** Announces sessions and says what is on now; RaceWall never goes live by itself. */
@@ -282,7 +285,10 @@ class CoreViewModel(app: Application) : AndroidViewModel(app), AppActions {
 
     override fun installUpdate() = updater.install(getApplication())
 
-    override fun onCleared() = core.stop()
+    override fun onCleared() {
+        runCatching { connectivity?.unregisterNetworkCallback(networkCallback) }
+        core.stop()
+    }
 
     /**
      * The app left the screen (Home, another app, the screen off): the players, a team radio clip
