@@ -11,6 +11,11 @@ class TopicProvider(
     val source: String,
     val at: TopicView,
     val range: RangeView? = null,
+    /**
+     * A cheap key for the value at `t`: the same key means the same value, so the core need not work
+     * the value out again to see whether it changed. Null exactly when `at(t)` is null.
+     */
+    val version: ((t: Double) -> Any?)? = null,
 )
 
 /** A value, and which source gave it. */
@@ -84,6 +89,21 @@ class Bus {
         for (p in providers) {
             val value = p.at(t)
             if (value != null) return Answer(value, p.source)
+        }
+        return null
+    }
+
+    /**
+     * The answering source and its key for the value at `t` ("source|key"), without working the
+     * value out; null when no source has a value or when the answering source keeps no key, so
+     * only the value itself can tell.
+     */
+    fun version(topic: String, t: Double): String? {
+        val providers = synchronized(this) { topics[topic]?.toList() } ?: return null
+        for (p in providers) {
+            val v = p.version ?: return null
+            val key = v(t) ?: continue
+            return "${p.source}|$key"
         }
         return null
     }

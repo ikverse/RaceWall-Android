@@ -60,6 +60,10 @@ object Notify {
 /**
  * Keeps RaceWall running while it follows a live session, with an ongoing notification, so live
  * timing carries on with the screen off or another app in front. Started and stopped by the app.
+ *
+ * It is a "specialUse" foreground service: following a live sports timing feed for as long as the
+ * user watches fits none of Android's other types, and "dataSync", used before, is limited to six
+ * hours a day from Android 15, less than a race weekend day of sessions.
  */
 class LiveService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
@@ -70,9 +74,29 @@ class LiveService : Service() {
             this,
             Notify.ID,
             Notify.liveNotification(this, text),
-            if (Build.VERSION.SDK_INT >= 29) ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC else 0,
+            if (Build.VERSION.SDK_INT >= 34) ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE else 0,
         )
         return START_NOT_STICKY
+    }
+
+    /**
+     * Android ran out of time for a time-limited service type. Not expected for "specialUse", but if
+     * a later Android limits it, the service stops at once (Android ends the app if it does not)
+     * and says so, instead of RaceWall crashing.
+     */
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        stopped()
+    }
+
+    @Deprecated("Android 14's form; Android 15 calls the one with the service type")
+    override fun onTimeout(startId: Int) {
+        stopped()
+    }
+
+    private fun stopped() {
+        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+        stopSelf()
+        Notify.alert(this, "Live timing paused in the background", "Android stopped it running in the background. Open RaceWall to carry on.")
     }
 
     companion object {

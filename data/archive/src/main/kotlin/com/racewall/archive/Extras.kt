@@ -93,6 +93,21 @@ class LapHistoryBuilder {
     private val lastLap = HashMap<String, Int>()
     private val counts = HashMap<String, Int>()
 
+    /** "number:lap" of every lap in `events`, so a lap is never listed twice. */
+    private val known = HashSet<String>()
+
+    /** The laps that came from a backfill: the live feed's own copy of one is not added again. */
+    private val filled = HashSet<String>()
+
+    /** Each car's lap count each time it changed: how many laps a set of tyres has done. */
+    private val lapCounts = HashMap<String, ArrayList<Pair<Double, Int>>>()
+
+    /** The moments any car's lap count changed. */
+    private val lapChanges = ArrayList<Double>()
+
+    /** Goes up when laps are added out of time order, by a backfill. */
+    private var gen = 0
+
     @Synchronized
     fun add(t: Double, data: Any?) {
         val lines = obj(obj(data)["Lines"])
@@ -100,6 +115,13 @@ class LapHistoryBuilder {
         val wasFirst = first
         first = false
         for (number in lines.keys) {
+            (obj(lines[number])["NumberOfLaps"] as? Number)?.toInt()?.let { laps ->
+                val list = lapCounts.getOrPut(number) { ArrayList() }
+                if (list.lastOrNull()?.second != laps) {
+                    list.add(t to laps)
+                    lapChanges.add(t)
+                }
+            }
             if (!wasFirst) {
                 val sectors = obj(obj(lines[number])["Sectors"])
                 for (sector in 0..1) if (truthy(obj(sectors["$sector"])["Value"])) sectorEvents.add(SectorEvent(t, number, sector))
@@ -118,8 +140,48 @@ class LapHistoryBuilder {
             counts[number] = n
             val lap = count ?: n
             lastLap[number] = lap
+            val key = "$number:$lap"
+            if (key in filled) continue
+            known.add(key)
             events.add(LapEvent(t, number, LapTime(lap, time, lapMs(time))))
         }
+    }
+
+    /**
+     * Adds laps driven before RaceWall joined the session, from the archive or an earlier
+     * recording. A lap already known is kept as it is; the rest are slotted in by time.
+     */
+    @Synchronized
+    fun backfill(laps: List<LapEvent>): Int {
+        var added = 0
+        for (e in laps) {
+            val key = "${e.number}:${e.lap.lap}"
+            if (!known.add(key)) continue
+            filled.add(key)
+            events.add(e)
+            added++
+        }
+        if (added > 0) {
+            events.sortBy { it.t }
+            gen++
+        }
+        return added
+    }
+
+    /** A key that changes whenever `at(t)` may give something else. */
+    @Synchronized
+    fun version(t: Double): String = "$gen:${lastAt(events, t) { it.t }}"
+
+    /** A key that changes whenever any car's lap count at `t` may be different. */
+    @Synchronized
+    fun lapsVersion(t: Double): Int = lastAt(lapChanges, t) { it }
+
+    /** A car's lap count at `t`; before its first known count, that first count. */
+    @Synchronized
+    fun lapsAt(number: String, t: Double): Int? {
+        val list = lapCounts[number] ?: return null
+        if (list.isEmpty()) return null
+        return list[maxOf(0, lastAt(list, t) { it.first })].second
     }
 
     @Synchronized
@@ -177,4 +239,98 @@ fun radioClips(t: Double, data: Any?, sessionUrl: String): List<TimedClip> = ite
     val path = jsString(c["Path"] ?: "")
     if (path.isEmpty()) return@mapNotNull null
     TimedClip(t, RadioClip(parseUtc(jsString(c["Utc"] ?: "")) ?: 0L, jsString(c["RacingNumber"] ?: ""), sessionUrl + path))
+}
+
+/**
+ * When each stint first appeared, and how old its tyres were then, so a stint's tyre age can be
+ * counted from the car's laps since: the feed's own TotalLaps lags behind the lap count, and
+ * arrives as 0 when the car comes in. As the desktop's extras.ts.
+ */
+class StintStarts {
+    class Start(val t: Double, val age: Int)
+
+    private val seen = HashMap<String, Start>()
+    private var state: Any? = LinkedHashMap<String, Any?>()
+    private val digits = Regex("^\\d+$")
+
+    @Synchronized
+    fun add(t: Double, data: Any?) {
+        state = mergeFeed(state, data)
+        for ((number, line) in obj(obj(data)["Lines"])) {
+            val stints = obj(line)["Stints"] ?: continue
+            val merged = obj(obj(obj(state)["Lines"])[number])["Stints"]
+            val keys = if (stints is List<*>) stints.indices.map { "$it" } else obj(stints).keys.toList()
+            for (k in keys) {
+                if (!digits.matches(k)) continue
+                val id = "$number:$k"
+                if (id in seen) continue
+                val s = obj(if (merged is List<*>) merged.getOrNull(k.toInt()) else obj(merged)[k])
+                seen[id] = Start(t, maxOf(num(s["TotalLaps"]), num(s["StartLaps"])).toInt())
+            }
+        }
+    }
+
+    @Synchronized
+    fun get(number: String, index: Int): Start? = seen["$number:$index"]
+}
+
+/**
+ * Tyre age of one stint: the age when it was first seen plus the laps the car has driven since
+ * (up to the next stint), or TotalLaps when that is higher.
+ */
+fun tyreAge(starts: StintStarts, history: LapHistoryBuilder, number: String, index: Int, t: Double, startAge: Int, total: Int): Int {
+    val start = starts.get(number, index) ?: return total
+    val from = history.lapsAt(number, start.t) ?: return total
+    val next = starts.get(number, index + 1)
+    val to = history.lapsAt(number, if (next != null && next.t <= t) next.t else t) ?: return total
+    return maxOf(total, maxOf(startAge, start.age) + maxOf(0, to - from))
+}
+
+/**
+ * Splits a recording's records into runs: an app restart begins again at 00:00:00 with a snapshot
+ * ("_kf"). Live records can also arrive a few milliseconds out of order; that is not a new run.
+ */
+private fun runs(entries: List<FeedEntry>): List<List<FeedEntry>> {
+    val out = ArrayList<ArrayList<FeedEntry>>()
+    var last = Double.POSITIVE_INFINITY
+    for (e in entries) {
+        val kf = obj(e.data)["_kf"] == true
+        if (out.isEmpty() || (e.t < last && (kf || e.t < last - 30_000))) out.add(ArrayList())
+        out.last().add(e)
+        last = e.t
+    }
+    return out
+}
+
+/** UTC of time 0 of one run, from the race control messages that arrived during it (not the snapshot). */
+private fun runBase(entries: List<FeedEntry>): Double? {
+    val anchors = ArrayList<Double>()
+    for (e in entries) {
+        if (obj(e.data)["_kf"] == true) continue
+        for (m in raceControlMessages(e.t, e.data)) if (m.message.utc != 0L) anchors.add(m.message.utc - e.t)
+    }
+    if (anchors.isEmpty()) return null
+    anchors.sort()
+    return anchors[anchors.size / 2]
+}
+
+/** A lap from before RaceWall joined, with its UTC time. */
+class BackfillLap(val utc: Double, val number: String, val lap: LapTime)
+
+/**
+ * Every lap in a TimingData file of the archive or a recording, with its UTC time. `baseUtc` is
+ * the UTC time of 00:00:00 when known (a recording's recording.json); otherwise, and for runs of a
+ * recording made before that file existed, each run is placed by its race control messages.
+ */
+fun lapsFromFiles(timingData: String, raceControl: String, baseUtc: Double?): List<BackfillLap> {
+    val td = runs(parseStream(timingData))
+    val rc = runs(parseStream(raceControl))
+    val out = ArrayList<BackfillLap>()
+    td.forEachIndexed { i, run ->
+        val base = (if (baseUtc != null && td.size == 1) baseUtc else if (rc.size == td.size) runBase(rc[i]) else null) ?: return@forEachIndexed
+        val builder = LapHistoryBuilder()
+        for (e in run) builder.add(e.t, e.data)
+        for (e in builder.events) out.add(BackfillLap(base + e.t, e.number, e.lap))
+    }
+    return out
 }

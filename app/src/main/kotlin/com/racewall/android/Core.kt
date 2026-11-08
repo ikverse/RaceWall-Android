@@ -5,6 +5,10 @@ import com.racewall.analysis.PitWindow
 import com.racewall.analysis.RaceTopics
 import com.racewall.archive.Archive
 import com.racewall.archive.ArchiveMeeting
+import com.racewall.archive.ArchiveSignInException
+import com.racewall.archive.BackfillLap
+import com.racewall.archive.lapsFromFiles
+import com.racewall.archive.parseUtc
 import com.racewall.archive.OutlineText
 import com.racewall.archive.SOURCE as ARCHIVE
 import com.racewall.archive.STREAMS
@@ -62,6 +66,9 @@ private const val LEAD_IN_MS = 60_000.0
 /** What the battles and pit-window analyses publish, as on the desktop. */
 const val BATTLES_TOPIC = "racewall.battles.list"
 const val PIT_WINDOW_TOPIC = "racewall.pit-window.estimate"
+
+/** How often a live session asks the archive again for the laps before RaceWall joined. */
+private const val BACKFILL_RETRY_MS = 5 * 60_000L
 
 /** The source name of live timing on the bus. */
 const val LIVE = "f1-live"
@@ -191,7 +198,25 @@ class Core(
         var endedAt: Long? = null,
         /** Whether this session's own outline has been saved for the next session at the circuit. */
         var outlineSaved: Boolean = false,
+        /** Filling in the laps driven before RaceWall joined: see `backfill`. */
+        var backfill: Backfill = Backfill(),
     )
+
+    private class Backfill(
+        /** Wall time of the next try. */
+        var next: Long = 0,
+        @Volatile var running: Boolean = false,
+        /** The archive gave the laps, or there is nothing more to try. */
+        var done: Boolean = false,
+        /** The archive needs a sign-in RaceWall does not have. */
+        var archiveOff: Boolean = false,
+        var recordingTried: Boolean = false,
+    )
+
+    /** What a topic last answered and under which key, so an unchanged topic is not worked out again. */
+    private class Cached(val key: String, val answer: com.racewall.bus.Answer)
+
+    private val cache = java.util.concurrent.ConcurrentHashMap<String, Cached>()
 
     val bus = Bus()
     private val clock = Clock()
@@ -253,6 +278,7 @@ class Core(
     fun setOrder(sources: List<String>) {
         order = sources
         bus.setOrder(order)
+        cache.clear()
         scope.launch { ensureBackups() }
         tick()
     }
@@ -276,6 +302,11 @@ class Core(
                     scope.launch(Dispatchers.IO) { writeOutline(file, outline) }
                 }
             }
+            val bf = l.backfill
+            if (l.path != null && !bf.done && !bf.running && now() >= bf.next) {
+                bf.running = true
+                scope.launch(Dispatchers.IO) { backfill(l) }
+            }
             val status = bus.typed<SessionStatus>(Topic.SESSION_STATUS, clock.time)
             if (status != null && status.flag != l.lastFlag) {
                 if (l.lastFlag != null) onFlag(status.flag, l.model.info)
@@ -287,7 +318,12 @@ class Core(
         val sources = LinkedHashSet<String>()
         val topics = LinkedHashMap<String, Any>()
         for (name in subscribed) {
-            val a = bus.answer(name, t) ?: continue
+            // A topic whose source keys it is worked out again only when the key changed; the same
+            // value object is passed on, so the frame compares equal at once.
+            val key = bus.version(name, t)
+            val hit = key?.let { k -> cache[name]?.takeIf { it.key == k } }
+            val a = hit?.answer ?: bus.answer(name, t) ?: continue
+            if (key != null && hit == null) cache[name] = Cached(key, a)
             sources.add(a.source)
             topics[name] = a.value
         }
@@ -305,10 +341,42 @@ class Core(
         messages = bus.typed<RaceControlMessages>(Topic.RACE_CONTROL, t),
     )
 
+    /** The keys of everything the analyses read at `t`, or null when one of them keeps none. */
+    private fun raceKey(t: Double): String? {
+        val keys = ArrayList<String>()
+        for (topic in listOf(Topic.SESSION_INFO, Topic.SESSION_STATUS, Topic.TIMING_POSITIONS, Topic.LAP_HISTORY, Topic.TIMING_STINTS, Topic.RACE_CONTROL)) {
+            if (!bus.has(topic)) {
+                keys.add("-")
+                continue
+            }
+            keys.add(bus.version(topic, t) ?: if (bus.answer(topic, t) == null) "-" else return null)
+        }
+        return keys.joinToString(";")
+    }
+
+    /** One analysis, worked out again only when what it reads has changed. */
+    private class Memo(private val compute: (Double) -> Any?) {
+        @Volatile private var last: Pair<String, Any?>? = null
+
+        fun at(t: Double, key: String?): Any? {
+            if (key != null) last?.let { if (it.first == key) return it.second }
+            val value = compute(t)
+            if (key != null) last = key to value
+            return value
+        }
+
+        fun clear() {
+            last = null
+        }
+    }
+
+    private val battles = Memo { t -> Battles.find(raceTopics(t)) }
+    private val pitWindow = Memo { t -> PitWindow.estimate(raceTopics(t)) }
+
     /** The desktop runs these as analysis plugins; here they are worked out when asked. */
     private fun registerAnalysis() {
-        bus.provide(BATTLES_TOPIC, TopicProvider("racewall.battles", { t -> if (session == null) null else Battles.find(raceTopics(t)) }))
-        bus.provide(PIT_WINDOW_TOPIC, TopicProvider("racewall.pit-window", { t -> if (session == null) null else PitWindow.estimate(raceTopics(t)) }))
+        bus.provide(BATTLES_TOPIC, TopicProvider("racewall.battles", { t -> if (session == null) null else battles.at(t, raceKey(t)) }))
+        bus.provide(PIT_WINDOW_TOPIC, TopicProvider("racewall.pit-window", { t -> if (session == null) null else pitWindow.at(t, raceKey(t)) }))
     }
 
     // ---------------------------------------------------------------- clock
@@ -382,6 +450,10 @@ class Core(
 
     private fun useSession(s: SessionModel) {
         session = s
+        // Keys are only unique within one session.
+        cache.clear()
+        battles.clear()
+        pitWindow.clear()
         bus.removeSource(OpenF1.SOURCE)
         cars = if (live != null) "loaded" else "none"
         backups.clear()
@@ -622,10 +694,62 @@ class Core(
         state.lastFlag = null
         state.endedAt = null
         state.outlineSaved = false
+        state.backfill = Backfill()
         useSession(state.model)
         clock.load(0.0, 0.0, 0.0)
         clock.play()
         updateMeta()
+    }
+
+    /**
+     * Fills in the laps driven before RaceWall joined a live session, so lap history (and the
+     * battles, lap times and pit window built on it) covers the whole race. The archive is asked
+     * first, again every few minutes, as it may publish a session while it is still on; otherwise
+     * RaceWall's own recording of the session from an earlier start is read once.
+     */
+    private suspend fun backfill(state: LiveState) {
+        val bf = state.backfill
+        val model = state.model
+        val path = state.path
+        try {
+            if (path == null) return
+            var laps: List<BackfillLap> = emptyList()
+            if (!bf.archiveOff) {
+                try {
+                    val files = archive.fetchSessionFiles(path)
+                    laps = lapsFromFiles(files.streams["TimingData"] ?: "", files.streams["RaceControlMessages"] ?: "", null)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (_: ArchiveSignInException) {
+                    bf.archiveOff = true
+                } catch (_: Exception) {
+                    // Not there yet, most likely: the archive keeps a session's files back while it is on.
+                }
+                if (laps.isNotEmpty()) bf.done = true
+            }
+            if (laps.isEmpty() && !bf.recordingTried) {
+                bf.recordingTried = true
+                laps = recordedLaps(path)
+            }
+            if (bf.archiveOff && bf.recordingTried) bf.done = true
+            if (live !== state || state.model !== model) return
+            model.backfillLaps(laps)
+        } finally {
+            bf.running = false
+            bf.next = now() + BACKFILL_RETRY_MS
+        }
+        tick()
+    }
+
+    /** Laps in RaceWall's own recording of a session, with their UTC times. */
+    private fun recordedLaps(path: String): List<BackfillLap> {
+        val root = recordings ?: return emptyList()
+        val dir = File(root, path.split('/').filter { it.isNotEmpty() }.joinToString(File.separator))
+        val base = runCatching {
+            @Suppress("UNCHECKED_CAST")
+            (FeedJson.parse(readFile(dir, "recording.json")) as? Map<String, Any?>)?.get("baseUtc")?.toString()?.let(::parseUtc)?.toDouble()
+        }.getOrNull()
+        return lapsFromFiles(readFile(dir, "TimingData.jsonStream"), readFile(dir, "RaceControlMessages.jsonStream"), base)
     }
 
     fun stopLive() {

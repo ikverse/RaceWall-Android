@@ -258,3 +258,101 @@ class LapHistoryTest {
         assertNull(laps(b, "1"))
     }
 }
+
+/** Ported from the desktop's laps.test.ts: laps from before RaceWall joined, and tyre age. */
+class BackfillTest {
+    private fun j(text: String) = FeedJson.parse(text)
+    private fun laps(b: LapHistoryBuilder, n: String) = b.at(Double.MAX_VALUE)[n]?.map { it.lap to it.time }
+    private fun lap(n: Int, time: String) = LapTime(n, time, null)
+    private fun iso(ms: Double) = Instant.ofEpochMilli(ms.toLong()).toString()
+    private fun stamp(ms: Long) = "%02d:%02d:%02d.%03d".format(ms / 3_600_000, ms / 60_000 % 60, ms / 1000 % 60, ms % 1000)
+
+    @Test
+    fun `adds earlier laps in time order, keeps the live copy of a lap, and never lists one twice`() {
+        val b = LapHistoryBuilder()
+        b.add(1000.0, j("""{"Lines":{"1":{"NumberOfLaps":3,"LastLapTime":{"Value":"1:33.000"}}}}"""))
+        val v = b.version(5000.0)
+        assertEquals(2, b.backfill(listOf(LapEvent(-200_000.0, "1", lap(1, "1:31.000")), LapEvent(-100_000.0, "1", lap(2, "1:32.000")), LapEvent(-5.0, "1", lap(3, "x")))))
+        assertTrue(b.version(5000.0) != v)
+        assertEquals(listOf(1 to "1:31.000", 2 to "1:32.000", 3 to "1:33.000"), laps(b, "1"))
+        b.backfill(listOf(LapEvent(1500.0, "1", lap(4, "1:34.000"))))
+        b.add(2000.0, j("""{"Lines":{"1":{"NumberOfLaps":4,"LastLapTime":{"Value":"1:34.000"}}}}"""))
+        assertEquals(listOf(1, 2, 3, 4), laps(b, "1")?.map { it.first })
+    }
+
+    @Test
+    fun `places each run of a recording made before recording_json by its race control messages`() {
+        val t0 = Instant.parse("2026-11-08T17:00:00Z").toEpochMilli()
+        val td = listOf(
+            "${stamp(0)}{\"Lines\":{\"1\":{\"NumberOfLaps\":0}},\"_kf\":true}",
+            "${stamp(80_000)}{\"Lines\":{\"1\":{\"NumberOfLaps\":1,\"LastLapTime\":{\"Value\":\"1:20.000\"}}}}",
+            "${stamp(0)}{\"Lines\":{\"1\":{\"NumberOfLaps\":40,\"LastLapTime\":{\"Value\":\"1:15.000\"}}},\"_kf\":true}",
+            "${stamp(75_000)}{\"Lines\":{\"1\":{\"NumberOfLaps\":41,\"LastLapTime\":{\"Value\":\"1:15.500\"}}}}",
+        ).joinToString("\n")
+        fun rc(base: Long, at: Long) = "${stamp(at)}{\"Messages\":[{\"Utc\":\"${Instant.ofEpochMilli(base + at).toString().substring(0, 19)}\",\"Message\":\"X\"}]}"
+        val control = listOf(
+            "${stamp(0)}{\"Messages\":[{\"Utc\":\"2026-11-08T16:00:00\",\"Message\":\"old\"}],\"_kf\":true}",
+            rc(t0, 30_000),
+            "${stamp(0)}{\"Messages\":[],\"_kf\":true}",
+            rc(t0 + 3_600_000, 10_000),
+        ).joinToString("\n")
+        val out = lapsFromFiles(td, control, null)
+        assertEquals(
+            listOf(1 to "2026-11-08T17:01:20Z", 40 to "2026-11-08T18:00:00Z", 41 to "2026-11-08T18:01:15Z"),
+            out.map { it.lap.lap to iso(it.utc) },
+        )
+    }
+
+    @Test
+    fun `uses recording_json for a recording of one run, and ignores records a few ms out of order`() {
+        val td = "00:00:00.000{\"Lines\":{\"1\":{\"NumberOfLaps\":4}},\"_kf\":true}\n00:01:20.010{\"Lines\":{\"1\":{\"NumberOfLaps\":5,\"LastLapTime\":{\"Value\":\"1:20.000\"}}}}\n00:01:20.005{\"Lines\":{\"2\":{\"Position\":\"2\"}}}"
+        val out = lapsFromFiles(td, "", Instant.parse("2026-11-08T17:00:00Z").toEpochMilli().toDouble())
+        assertEquals(listOf(5 to "2026-11-08T17:01:20.010Z"), out.map { it.lap.lap to iso(it.utc) })
+    }
+
+    private fun session(): Pair<Bus, SessionModel> {
+        val bus = Bus()
+        val s = SessionModel(bus, "test", emptyMap<String, Any?>(), 0.0)
+        s.register()
+        return bus to s
+    }
+
+    private fun stints(bus: Bus, t: Double) = bus.typed<com.racewall.topics.Stints>(Topic.TIMING_STINTS, t)!!
+
+    @Test
+    fun `counts the laps since the stint began, before TotalLaps catches up, and through a 0 at the pit stop`() {
+        val (bus, s) = session()
+        s.add("TimingData", 0.0, j("""{"Lines":{"5":{"NumberOfLaps":31}}}"""))
+        s.add("TimingAppData", 0.0, j("""{"Lines":{"5":{"Stints":[{"Compound":"MEDIUM","New":"true","TotalLaps":31,"StartLaps":0}]}}}"""))
+        s.add("TimingData", 75_000.0, j("""{"Lines":{"5":{"NumberOfLaps":32}}}"""))
+        assertEquals(32, stints(bus, 76_000.0)["5"]!![0].tyreAge)
+        s.add("TimingAppData", 78_000.0, j("""{"Lines":{"5":{"Stints":{"0":{"TotalLaps":32}}}}}"""))
+        s.add("TimingAppData", 100_000.0, j("""{"Lines":{"5":{"Stints":{"1":{"Compound":"UNKNOWN","New":"false","TotalLaps":0,"StartLaps":0}}}}}"""))
+        s.add("TimingAppData", 115_000.0, j("""{"Lines":{"5":{"Stints":{"1":{"Compound":"SOFT","New":"true"}}}}}"""))
+        assertEquals(listOf("SOFT" to 0, "MEDIUM" to 32).reversed(), stints(bus, 116_000.0)["5"]!!.map { it.compound.name to it.tyreAge })
+        s.add("TimingData", 170_000.0, j("""{"Lines":{"5":{"NumberOfLaps":33}}}"""))
+        val now = stints(bus, 171_000.0)["5"]!!
+        assertEquals(listOf(32, 1), now.map { it.tyreAge })
+        assertEquals(33, now[1].startLap)
+    }
+
+    @Test
+    fun `starts from the age the feed gives for a stint already running when RaceWall joined`() {
+        val (bus, s) = session()
+        s.add("TimingData", 0.0, j("""{"Lines":{"7":{"NumberOfLaps":20}}}"""))
+        s.add("TimingAppData", 0.0, j("""{"Lines":{"7":{"Stints":[{"Compound":"HARD","TotalLaps":12,"StartLaps":3}]}}}"""))
+        s.add("TimingData", 80_000.0, j("""{"Lines":{"7":{"NumberOfLaps":21}}}"""))
+        assertEquals(13, stints(bus, 80_000.0)["7"]!![0].tyreAge)
+    }
+
+    @Test
+    fun `keys each session topic so it changes only when its timelines do`() {
+        val (bus, s) = session()
+        s.add("TimingData", 0.0, j("""{"Lines":{"1":{"Position":"1","Line":1}}}"""))
+        val v = bus.version(Topic.TIMING_POSITIONS, 500.0)
+        assertEquals(v, bus.version(Topic.TIMING_POSITIONS, 900.0))
+        s.add("TimingData", 1000.0, j("""{"Lines":{"1":{"GapToLeader":"LAP 2"}}}"""))
+        assertEquals(v, bus.version(Topic.TIMING_POSITIONS, 900.0))
+        assertTrue(bus.version(Topic.TIMING_POSITIONS, 1000.0) != v)
+    }
+}
