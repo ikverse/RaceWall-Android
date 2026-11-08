@@ -38,12 +38,12 @@ object BritishGp {
         "Sessions":[{"Key":9946,"Name":"Qualifying","Type":"Qualifying","StartDate":"2025-07-05T16:00:00","EndDate":"2025-07-05T17:00:00","GmtOffset":"01:00:00","Path":"2025/2025-07-06_British_Grand_Prix/2025-07-05_Qualifying/"},
         {"Key":9947,"Name":"Race","Type":"Race","StartDate":"2025-07-06T15:00:00","EndDate":"2025-07-06T17:00:00","GmtOffset":"01:00:00","Path":"$PATH"}]}]}"""
 
-    /** An archive that answers from the fixture, with one season holding this one session. */
-    fun archive(): Archive = Archive(Fetcher { url, _ ->
+    /** An archive that answers from the fixture, with one season holding this one session; `status` is its ArchiveStatus. */
+    fun archive(status: String = "Complete"): Archive = Archive(Fetcher { url, _ ->
         val path = url.removePrefix(ARCHIVE_BASE)
         when {
             path.endsWith("Index.json") -> HttpResult(200, INDEX)
-            path.endsWith("SessionInfo.json") -> HttpResult(200, files.sessionInfo)
+            path.endsWith("SessionInfo.json") -> HttpResult(200, files.sessionInfo.replace("\"Complete\"", "\"$status\""))
             else -> (STREAMS + CAR_STREAMS).firstOrNull { path.endsWith("/$it.jsonStream") }?.let { HttpResult(200, files.streams[it] ?: cars.getValue(it)) } ?: HttpResult(404, null)
         }
     }, now = { 1_760_000_000_000 })

@@ -25,6 +25,8 @@ import com.racewall.android.ui.HOLD_MS
 import com.racewall.android.ui.RaceWallApp
 import com.racewall.android.ui.RaceWallTheme
 import com.racewall.android.ui.Screen
+import com.racewall.android.ui.bannerKey
+import com.racewall.android.ui.liveBanner
 import com.racewall.archive.ArchiveMeeting
 import kotlinx.serialization.json.JsonPrimitive
 import org.junit.Rule
@@ -53,7 +55,13 @@ class ShellTest {
     private var saves = 0
     private val previews = mutableListOf<Layouts>()
 
+    private var lives = 0
+    private var ui by mutableStateOf(UiState())
+
     private val actions = object : AppActions {
+        override fun goLive() {
+            lives++
+        }
         override suspend fun signedIn(token: String) {}
         override fun signOut() {}
         override fun toggle() {
@@ -86,7 +94,7 @@ class ShellTest {
 
     private fun show() {
         compose.setContent {
-            RaceWallTheme { RaceWallApp(Screen(frame, UiState(focusDriver = focus), Mode.REPLAY, settings, layouts), actions) }
+            RaceWallTheme { RaceWallApp(Screen(frame, ui.copy(focusDriver = focus), Mode.REPLAY, settings, layouts), actions) }
         }
     }
 
@@ -359,5 +367,32 @@ class ShellTest {
         show()
         compose.onNodeWithTag("row-81").performClick()
         assertEquals("81", focus)
+    }
+
+    @Test
+    fun `a session that is on shows the LIVE banner, which goes live and closes for that session only`() {
+        val race = OnNow("Singapore Grand Prix", "Race")
+        ui = UiState(onNow = race)
+        show()
+        compose.onNodeWithTag("live-banner").assertExists()
+        compose.onNodeWithText("Singapore Grand Prix · Race").assertExists()
+        compose.onNodeWithContentDescription("Watch live").performClick()
+        assertEquals(1, lives)
+        compose.onNodeWithContentDescription("Close").performClick()
+        compose.onNodeWithTag("live-banner").assertDoesNotExist()
+        ui = UiState(onNow = race.copy(name = "Sprint"))
+        compose.onNodeWithTag("live-banner").assertExists()
+    }
+
+    @Test
+    fun `the banner shows only while a session is on and you are not on live timing`() {
+        val race = OnNow("Singapore Grand Prix", "Race")
+        val replay = SessionMeta(com.racewall.topics.SessionInfo(0, 0, 0, "", "", "", "", "", "", "", ""), 0.0, 1.0, null, true, BritishGp.PATH)
+        val live = replay.copy(path = null, live = LiveInfo(com.racewall.live.LiveStatus.CONNECTED, "", true, 0))
+        assertNull(liveBanner(race, live, ""))
+        assertEquals(race, liveBanner(race, null, ""))
+        assertEquals(race, liveBanner(race, replay, ""))
+        assertNull(liveBanner(null, replay, ""))
+        assertNull(liveBanner(race, replay, bannerKey(race)))
     }
 }
