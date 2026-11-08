@@ -80,7 +80,6 @@ interface AppActions : TransportActions {
     fun showLastResult() {}
     fun range(topic: String, from: Double, to: Double, filter: List<String>?): Any? = null
     fun toggleFullscreen() {}
-    fun leaveLive() {}
     fun checkForUpdates() {}
     fun downloadUpdate() {}
     fun installUpdate() {}

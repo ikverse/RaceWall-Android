@@ -1,6 +1,20 @@
 package com.racewall.android.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.width
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.sp
+import com.racewall.topics.TrackFlag
+import kotlinx.coroutines.delay
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -62,6 +76,8 @@ interface TransportActions {
     /** Connects to live timing, or jumps to the live moment when already connected. */
     fun goLive() {}
     fun syncDelay() {}
+    /** Stops following live timing and goes back to the last result. */
+    fun leaveLive() {}
 }
 
 /** The "year" that stands for the user's recordings. */
@@ -82,10 +98,18 @@ private fun Dot(on: Boolean, color: Color) {
     Box(Modifier.size(7.dp).let { if (on) it.background(color, CircleShape) else it.border(1.dp, color, CircleShape) })
 }
 
+/** A tap area of at least 48 dp, for a button on a touch screen. */
+private val Touch = Modifier.heightIn(min = 48.dp).widthIn(min = 48.dp)
+
+/** "4x" as the desktop writes speeds: 0.5×, 1×, 16×. */
+private fun speedText(s: Double) = "${if (s % 1.0 == 0.0) s.toInt().toString() else s.toString()}×"
+
 /**
- * The transport bar, as the desktop's Transport.svelte: the session picker, play and pause, the
- * position in the session, the speed or, while live, the delay and Sync, the lap and the clock, the
- * track flag, and what is loading.
+ * The transport bar, as the desktop's Transport.svelte, in three zones. Left: what is on and how it
+ * is connected; it opens the picker. Centre, always in the middle: what can be done now, which
+ * changes with the mode (replay: position and speed; live and following: Live, −30 s and pause;
+ * behind: position and Go live). Right: the lap and the flag, and the ⋯ menu for video quality, the
+ * TV delay, the time of day, the sources and leaving live. Messages float above the bar.
  */
 @Composable
 fun Transport(
@@ -104,102 +128,253 @@ fun Transport(
 ) {
     val info = frame.info
     val clock = frame.clock
-    val flag = frame.status?.let { Format.flag(it.flag) }
+    val status = frame.status
+    val flag = status?.let { Format.flag(it.flag) ?: if (it.flag == TrackFlag.GREEN) "Green" to Rw.green else null }
     val sourceText = frame.sources.joinToString(", ") { SOURCE_NAMES[it] ?: it }
     val live = ui.session?.live
     val onNow = ui.onNow
+    val connected = live?.status == LiveStatus.CONNECTED
     val behind = if (live != null) maxOf(0, Math.round((clock.end - clock.time) / 1000).toInt()) else 0
+    var menu by remember { mutableStateOf<String?>(null) }
 
-    androidx.compose.foundation.layout.BoxWithConstraints(modifier.fillMaxWidth().height(34.dp).alpha(chromeAlpha)) {
-        // An upright tablet has no room for everything: the sources go, and the clock takes only its width.
+    // Notices that are not progress ("…") fade after a while; an error stays until closed or replaced.
+    var fadedNotice by remember { mutableStateOf("") }
+    LaunchedEffect(ui.notice) {
+        if (ui.notice.isNotEmpty() && !ui.notice.endsWith("…")) {
+            delay(5000)
+            fadedNotice = ui.notice
+        }
+    }
+    var closedError by remember { mutableStateOf("") }
+
+    BoxWithConstraints(modifier.fillMaxWidth().height(56.dp).alpha(chromeAlpha)) {
+        // Narrow (an upright tablet): the sides take only their own width and the labels shorten.
         val narrow = maxWidth < 1000.dp
+        val text = Rw.text(14f, Rw.t2)
         Row(
             Modifier
                 .fillMaxWidth()
-                .height(34.dp)
+                .height(56.dp)
                 .drawBehind { drawLine(Rw.border, Offset(0f, 0.5f), Offset(size.width, 0.5f), 1.dp.toPx()) }
-                .padding(horizontal = 10.dp),
+                .padding(horizontal = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            RwButton(onClick = { setPicker(!pickerOpen) }, label = "Pick a past session", modifier = Modifier.widthIn(max = if (narrow) 180.dp else 340.dp)) { c ->
-                Icon(R.drawable.ic_folder, c)
-                BasicText(
-                    when {
-                        info != null && info.meeting.isNotEmpty() -> "${info.meeting} · ${info.name} ${Format.year(info.startDate)}"
+            // Left: the session, Live or Replay, and the connection.
+            Row(if (narrow) Modifier else Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                RwButton(onClick = { setPicker(!pickerOpen) }, label = "Pick a past session", modifier = Touch.widthIn(max = if (narrow) 240.dp else 380.dp)) { c ->
+                    Icon(R.drawable.ic_folder, c, 16f)
+                    val name = when {
+                        info != null && info.meeting.isNotEmpty() -> {
+                            val meeting = info.meeting.removeSuffix(" Grand Prix") + if (narrow) "" else " GP".takeIf { info.meeting.endsWith(" Grand Prix") }.orEmpty()
+                            if (narrow) "$meeting · ${info.name}" else "$meeting · ${info.name} ${Format.year(info.startDate)}"
+                        }
                         live != null -> "Live timing"
                         else -> "Pick a session"
-                    },
-                    style = Rw.text(12f, c),
-                    maxLines = 1,
-                    overflow = if (narrow) TextOverflow.Ellipsis else TextOverflow.Clip,
-                )
-            }
-            if (live == null && onNow != null) {
-                RwButton(onClick = actions::goLive, on = true, label = "Go live") { c -> BasicText("Go live · ${onNow.name}", style = Rw.text(12f, c), maxLines = 1) }
-            }
-            if (live != null) {
-                val connected = live.status == LiveStatus.CONNECTED
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.testTag("live-status")) {
-                    Dot(connected, if (connected) Rw.t1 else Rw.t2)
-                    BasicText(if (connected) "Live" else LIVE_STATUS[live.status] ?: "", style = Rw.text(12f, if (connected) Rw.t1 else Rw.t2), maxLines = 1)
-                }
-            }
-            RwButton(onClick = actions::toggle, label = if (clock.playing) "Pause" else "Play") { c ->
-                Icon(if (clock.playing) R.drawable.ic_pause else R.drawable.ic_play, c)
-            }
-            RwSlider(
-                value = clock.time,
-                min = clock.start,
-                max = clock.end,
-                step = 1000.0,
-                onChange = actions::seek,
-                label = if (live != null) "Position in the live session" else "Replay position",
-                modifier = Modifier.weight(1f).widthIn(max = 520.dp),
-            )
-            if (live != null) {
-                if (!live.following) {
-                    RwButton(onClick = actions::goLive, on = true, label = "Jump to the live moment") { c ->
-                        BasicText(if (narrow) "Go live${if (behind > 0) " −$behind s" else ""}" else "Go live${if (behind > 0) " ($behind s behind)" else ""}", style = Rw.text(12f, c), maxLines = 1)
+                    }
+                    if (!(narrow && live != null && !connected)) {
+                        BasicText(name, style = Rw.text(14f, c), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                    }
+                    when {
+                        live != null && connected -> BasicText("LIVE", style = Rw.text(11f, Rw.t1, FontWeight.SemiBold).copy(letterSpacing = 0.9.sp), maxLines = 1, modifier = Modifier.testTag("live-status"))
+                        live != null -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.testTag("live-status")) {
+                            Dot(false, Rw.t2)
+                            BasicText(LIVE_STATUS[live.status] ?: "", style = Rw.text(14f, Rw.t2), maxLines = 1)
+                        }
+                        info != null && info.meeting.isNotEmpty() -> BasicText("REPLAY", style = Rw.text(11f, Rw.t3, FontWeight.SemiBold).copy(letterSpacing = 0.9.sp), maxLines = 1)
                     }
                 }
-                if (videoDriving) BasicText("Synced to video", style = Rw.text(12f, Rw.t2), maxLines = 1)
-                else {
-                    // The delay is still in Settings; here Sync is what is used.
-                    if (!narrow) BasicText("Delay ${Math.round(live.delayMs / 1000.0)} s", style = Rw.text(12f, Rw.t2), maxLines = 1)
-                    RwButton(onClick = actions::syncDelay, label = "Sync") { c -> BasicText("Sync", style = Rw.text(12f, c)) }
+            }
+
+            // Centre: what can be done now.
+            Row(
+                Modifier.weight(if (narrow) 1f else 2f),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterHorizontally),
+            ) {
+                val playPause: @Composable () -> Unit = {
+                    RwButton(onClick = actions::toggle, label = if (clock.playing) "Pause" else "Play", modifier = Touch) { c ->
+                        Icon(if (clock.playing) R.drawable.ic_pause else R.drawable.ic_play, c, 16f)
+                    }
                 }
-            } else {
-                RwSelect(
-                    value = clock.speed,
-                    options = SPEEDS.map { it to "${if (it % 1.0 == 0.0) it.toInt().toString() else it.toString()}x" },
-                    onChange = actions::setSpeed,
-                    label = "Speed",
-                )
+                if (live != null && live.following) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Dot(connected, if (connected) Rw.t1 else Rw.t2)
+                        BasicText("Live", style = Rw.text(14f, if (connected) Rw.t1 else Rw.t2, if (connected) FontWeight.SemiBold else FontWeight.Normal), maxLines = 1)
+                        if (videoDriving) BasicText("· follows video", style = Rw.text(14f, Rw.t3), maxLines = 1)
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    RwButton(onClick = { actions.seek(maxOf(clock.start, clock.time - 30_000)) }, label = "Back 30 seconds", modifier = Touch) { c ->
+                        BasicText("−30 s", style = Rw.text(14f, c), maxLines = 1)
+                    }
+                    playPause()
+                } else {
+                    playPause()
+                    if (live == null) BasicText(Format.elapsed(clock.time), style = Rw.text(14f, Rw.t1), maxLines = 1)
+                    RwSlider(
+                        value = clock.time,
+                        min = clock.start,
+                        max = clock.end,
+                        step = 1000.0,
+                        onChange = actions::seek,
+                        label = if (live != null) "Position in the live session" else "Replay position",
+                        modifier = Modifier.weight(1f).heightIn(min = 48.dp).padding(horizontal = 8.dp),
+                    )
+                    if (live != null) {
+                        RwButton(onClick = actions::goLive, on = true, label = "Jump to the live moment", modifier = Touch) { c ->
+                            val words = when {
+                                behind == 0 -> if (narrow) "Live" else "Go live"
+                                narrow -> "−$behind s"
+                                else -> "−$behind s · Go live"
+                            }
+                            BasicText(words, style = Rw.text(14f, c), maxLines = 1)
+                        }
+                    } else {
+                        if (!narrow) BasicText(Format.elapsed(clock.end), style = Rw.text(14f, Rw.t3), maxLines = 1)
+                        Box {
+                            RwButton(onClick = { menu = if (menu == "speed") null else "speed" }, on = menu == "speed", label = "Speed", modifier = Touch.testTag("Speed")) { c ->
+                                BasicText(speedText(clock.speed), style = Rw.text(14f, c), maxLines = 1)
+                                Icon(R.drawable.ic_chevron_down, c, 12f)
+                            }
+                            if (menu == "speed") {
+                                Popup(
+                                    alignment = Alignment.BottomCenter,
+                                    offset = with(LocalDensity.current) { IntOffset(0, -52.dp.roundToPx()) },
+                                    onDismissRequest = { menu = null },
+                                    properties = PopupProperties(focusable = true),
+                                ) {
+                                    Column(Modifier.background(Rw.bg, RoundedCornerShape(6.dp)).border(1.dp, Rw.border2, RoundedCornerShape(6.dp)).padding(4.dp)) {
+                                        for (s in SPEEDS) {
+                                            val chosen = s == clock.speed
+                                            Box(
+                                                Modifier
+                                                    .size(width = 80.dp, height = 48.dp)
+                                                    .drawBehind { if (chosen) drawLine(Rw.brand, Offset(0.5f, 8.dp.toPx()), Offset(0.5f, size.height - 8.dp.toPx()), 1.dp.toPx()) }
+                                                    .clickable(remember { MutableInteractionSource() }, indication = null) {
+                                                        menu = null
+                                                        actions.setSpeed(s)
+                                                    }
+                                                    .padding(horizontal = 14.dp),
+                                                contentAlignment = Alignment.CenterEnd,
+                                            ) { BasicText(speedText(s), style = Rw.text(14f, if (chosen) Rw.t1 else Rw.t2)) }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
-            if (videoQuality != null) {
-                RwSelect(
-                    value = videoQuality,
-                    options = listOf(PER_PLAYER to if (narrow) "Per player" else "Video: per player") + VIDEO_QUALITY.map { (k, name) -> k to if (narrow) name else "Video: $name" },
-                    onChange = setVideoQuality,
-                    label = "Video quality",
-                    maxWidth = if (narrow) 110f else 170f,
-                )
+
+            // Right: the lap and the flag, and the ⋯ menu.
+            Row(
+                if (narrow) Modifier else Modifier.weight(1f),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.End),
+            ) {
+                val lap = status?.lap ?: 0
+                if (lap > 0) {
+                    Row(verticalAlignment = Alignment.Bottom) {
+                        if (!narrow) BasicText("Lap ", style = Rw.text(14f, Rw.t3), maxLines = 1)
+                        BasicText("$lap", style = Rw.text(14f, Rw.t1), maxLines = 1)
+                        val total = status?.totalLaps ?: 0
+                        if (total > 0) BasicText("/$total", style = Rw.text(14f, Rw.t3), maxLines = 1)
+                    }
+                }
+                if (flag != null) {
+                    if (lap > 0) BasicText("·", style = Rw.text(14f, Rw.t3))
+                    BasicText(flag.first, style = Rw.text(14f, flag.second), maxLines = 1)
+                }
+                Box {
+                    RwButton(onClick = { menu = if (menu == "more") null else "more" }, on = menu == "more", label = "More", modifier = Touch) { c ->
+                        BasicText("···", style = Rw.text(16f, c, FontWeight.SemiBold), maxLines = 1)
+                    }
+                    if (menu == "more") {
+                        Popup(
+                            alignment = Alignment.BottomEnd,
+                            offset = with(LocalDensity.current) { IntOffset(0, -52.dp.roundToPx()) },
+                            onDismissRequest = { menu = null },
+                            properties = PopupProperties(focusable = true),
+                        ) {
+                            Column(Modifier.widthIn(min = 340.dp, max = 460.dp).background(Rw.bg, RoundedCornerShape(6.dp)).border(1.dp, Rw.border2, RoundedCornerShape(6.dp)).padding(vertical = 4.dp)) {
+                                @Composable
+                                fun MenuRow(key: String, content: @Composable RowScope.() -> Unit) = Row(
+                                    Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(horizontal = 14.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                ) {
+                                    BasicText(key, style = Rw.text(14f, Rw.t3), modifier = Modifier.width(110.dp))
+                                    content()
+                                }
+                                if (videoQuality != null) MenuRow("Video quality") {
+                                    RwSelect(
+                                        value = videoQuality,
+                                        options = listOf(PER_PLAYER to "Each player") + VIDEO_QUALITY.map { (k, name) -> k to name },
+                                        onChange = setVideoQuality,
+                                        label = "Video quality",
+                                        fontSize = 14f,
+                                        maxWidth = 200f,
+                                        modifier = Modifier.heightIn(min = 48.dp),
+                                    )
+                                }
+                                if (live != null && !videoDriving) MenuRow("TV delay") {
+                                    BasicText("${Math.round(live.delayMs / 1000.0)} s", style = Rw.text(14f, Rw.t1), maxLines = 1)
+                                    BasicText("for TV or satellite", style = Rw.text(14f, Rw.t3), maxLines = 1, modifier = Modifier.weight(1f))
+                                    RwButton(onClick = { menu = null; actions.syncDelay() }, on = true, label = "Sync", modifier = Touch) { c -> BasicText("Sync", style = Rw.text(14f, c)) }
+                                }
+                                frame.utc?.let { utc -> MenuRow("Time of day") { BasicText("${Format.utcClock(utc)} UTC", style = Rw.text(14f, Rw.t1), maxLines = 1) } }
+                                if (sourceText.isNotEmpty()) MenuRow("Sources") { BasicText(sourceText, style = Rw.text(14f, Rw.t2)) }
+                                if (live != null) {
+                                    Box(Modifier.fillMaxWidth().padding(vertical = 4.dp).height(1.dp).background(Rw.border))
+                                    Box(
+                                        Modifier
+                                            .fillMaxWidth()
+                                            .height(48.dp)
+                                            .clickable(remember { MutableInteractionSource() }, indication = null, role = Role.Button) {
+                                                menu = null
+                                                actions.leaveLive()
+                                            }
+                                            .semantics { contentDescription = "Leave live timing" }
+                                            .padding(horizontal = 14.dp),
+                                        contentAlignment = Alignment.CenterStart,
+                                    ) { BasicText("Leave live timing", style = Rw.text(14f, Rw.t2)) }
+                                }
+                            }
+                        }
+                    }
+                }
             }
-            val lap = Format.lapText(frame.status)
-            val time = frame.utc?.let { "${Format.utcClock(it)} UTC" } ?: Format.elapsed(clock.time)
-            BasicText(if (lap.isNotEmpty()) "$lap · $time" else time, style = Rw.text(12f, Rw.t2), modifier = Modifier.widthIn(min = if (narrow) 0.dp else 170.dp), maxLines = 1)
-            if (flag != null) BasicText(flag.first, style = Rw.text(12f, flag.second), maxLines = 1)
-            Spacer(Modifier.weight(1f, fill = true))
-            // On a narrow screen a long message would squeeze the position bar to nothing.
-            val messageWidth = Modifier.widthIn(max = if (narrow) 200.dp else 420.dp)
-            when {
-                ui.loading.isNotEmpty() -> BasicText(ui.loading, style = Rw.text(12f, Rw.t3), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = messageWidth)
-                ui.notice.isNotEmpty() -> BasicText(ui.notice, style = Rw.text(12f, Rw.t3), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = messageWidth)
-                ui.error.isNotEmpty() -> BasicText(ui.error, style = Rw.text(12f, Rw.red), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = messageWidth)
-            }
-            if (sourceText.isNotEmpty() && !narrow) BasicText("Sources: $sourceText", style = Rw.text(12f, Rw.t3), maxLines = 1)
         }
+
+        // The message floats above the right end of the bar, so nothing in the bar moves.
+        val error = ui.error.takeIf { it.isNotEmpty() && it != closedError }
+        val message = error ?: ui.loading.ifEmpty { ui.notice.takeIf { it != fadedNotice } ?: "" }
+        if (message.isNotEmpty()) {
+            Popup(
+                alignment = Alignment.BottomEnd,
+                offset = with(LocalDensity.current) { IntOffset(-8.dp.roundToPx(), -64.dp.roundToPx()) },
+                properties = PopupProperties(focusable = false),
+            ) {
+                Row(
+                    Modifier
+                        .widthIn(max = if (narrow) 420.dp else 560.dp)
+                        .heightIn(min = 48.dp)
+                        .background(Rw.bg, RoundedCornerShape(6.dp))
+                        .border(1.dp, Rw.border2, RoundedCornerShape(6.dp))
+                        .padding(start = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    BasicText(message, style = Rw.text(14f, if (error != null) Rw.red else Rw.t1), maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false).padding(vertical = 8.dp))
+                    if (error != null) {
+                        RwButton(onClick = { closedError = error }, label = "Close message", modifier = Touch) { c -> Icon(R.drawable.ic_dismiss, c, 14f) }
+                    } else {
+                        Spacer(Modifier.width(4.dp))
+                    }
+                }
+            }
+        }
+
         if (pickerOpen) SessionPicker(actions, onNow?.let { "${it.meeting} · ${it.name}" }, live != null, onClose = { setPicker(false) })
     }
 }
