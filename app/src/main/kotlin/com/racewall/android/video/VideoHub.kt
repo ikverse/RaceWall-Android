@@ -23,6 +23,8 @@ interface PlayerHandle {
     val live: Boolean
     /** True once a stream has loaded: a player that is still loading has nothing to carry on from. */
     val loaded: Boolean
+    /** True while the player is moving to a new place, or waiting for video there. */
+    val seeking: Boolean get() = false
 }
 
 /**
@@ -150,6 +152,26 @@ class VideoHub(
     fun followers(): List<PlayerHandle> {
         val lead = leaderId()
         return players.filter { (id, _) -> id != lead && id !in alone }.values.toList()
+    }
+
+    /**
+     * Brings the players following `lead` into line with it, and plays or pauses them with it. Live,
+     * each player's time is its own manifest's, so they are matched by the real time of their
+     * pictures; and a player still loading or already seeking is left alone, or it would be moved
+     * again and again before it ever showed a frame. A replay's channels share one timeline: they
+     * are matched by the video time.
+     */
+    fun syncFollowers(lead: PlayerHandle) {
+        for (f in followers()) {
+            if (!f.seeking) {
+                if (lead.live) {
+                    val t = lead.sessionTime()
+                    val own = if (f.loaded) f.sessionTime() else null
+                    if (t != null && own != null && kotlin.math.abs(own - t) > 600) f.seekSession(t)
+                } else if (kotlin.math.abs(f.currentTime - lead.currentTime) > 0.6) f.currentTime = lead.currentTime
+            }
+            if (f.paused != lead.paused) if (lead.paused) f.pause() else f.play()
+        }
     }
 
     /** This player follows the timing again (the main player, when it was paused to mark the start). */

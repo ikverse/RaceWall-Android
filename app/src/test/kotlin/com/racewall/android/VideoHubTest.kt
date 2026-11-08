@@ -173,4 +173,65 @@ class VideoHubTest {
         // Something unknown in the settings file leaves the players to their own.
         assertEquals("540", com.racewall.android.state.videoQuality("4k", "540"))
     }
+
+    /** A live player whose picture is at real time `utc` while its own video time is `time`. */
+    private class LivePlayer(time: Double, var utc: Double, override val loaded: Boolean = true, override val seeking: Boolean = false) : PlayerHandle {
+        override var paused = false
+        override val ended = false
+        override var currentTime = time
+        val seeks = ArrayList<Double>()
+        override fun play() {
+            paused = false
+        }
+        override fun pause() {
+            paused = true
+        }
+        override val contentId: Long = 1
+        override fun sessionTime(): Double = utc
+        override fun seekSession(t: Double): Boolean {
+            seeks.add(t)
+            return true
+        }
+        override fun seekRange() = 0.0..1000.0
+        override val live = true
+    }
+
+    @Test
+    fun `live followers line up by the real time of the picture, not each manifest's own video time`() {
+        val lead = LivePlayer(5000.0, 1_000_000.0)
+        // The onboard stream's video time is quite different, but its picture is only 0.3 s behind.
+        val onboard = LivePlayer(120.0, 999_700.0)
+        hub.register("a", lead)
+        hub.register("onboard", onboard, canLead = false)
+        hub.syncFollowers(lead)
+        assertEquals(emptyList(), onboard.seeks)
+        assertEquals(120.0, onboard.currentTime)
+        // A second out: it is moved to the leader's moment.
+        onboard.utc = 998_000.0
+        hub.syncFollowers(lead)
+        assertEquals(listOf(1_000_000.0), onboard.seeks)
+    }
+
+    @Test
+    fun `live followers are left alone while they load or seek`() {
+        val lead = LivePlayer(5000.0, 1_000_000.0)
+        val loading = LivePlayer(0.0, 0.0, loaded = false)
+        val seeking = LivePlayer(0.0, 0.0, seeking = true)
+        hub.register("a", lead)
+        hub.register("b", loading, canLead = false)
+        hub.register("c", seeking, canLead = false)
+        hub.syncFollowers(lead)
+        assertEquals(emptyList(), loading.seeks)
+        assertEquals(emptyList(), seeking.seeks)
+    }
+
+    @Test
+    fun `replay followers match the video time`() {
+        val lead = Fake(time = 100.0)
+        val other = Fake(time = 40.0)
+        hub.register("a", lead)
+        hub.register("b", other, canLead = false)
+        hub.syncFollowers(lead)
+        assertEquals(100.0, other.currentTime)
+    }
 }

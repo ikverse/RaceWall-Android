@@ -96,4 +96,52 @@ class ClockTest {
         f.clock.extend(10.0)
         assertEquals(5000.0, f.clock.state().end)
     }
+
+    @Test
+    fun `live, keeps playing at the end, held there until the end moves, and never rewinds`() {
+        val f = Fake()
+        f.clock.load(0.0, 1000.0, 0.0, live = true)
+        f.clock.play()
+        f.advance(1500.0)
+        assertEquals(1000.0, f.clock.time)
+        assertTrue(f.clock.playing)
+        // Moving the end lets it run on smoothly from its anchor, up to the new end.
+        f.clock.extend(1600.0)
+        assertEquals(1500.0, f.clock.time)
+        f.advance(50.0)
+        assertEquals(1550.0, f.clock.time)
+        // Paused at the end, play carries on there instead of going back to the start.
+        f.clock.seek(1600.0)
+        f.clock.pause()
+        f.clock.play()
+        assertEquals(1600.0, f.clock.time)
+        assertTrue(f.clock.playing)
+    }
+
+    @Test
+    fun `live, a playhead running with the edge loses no time as the end moves every tick`() {
+        val f = Fake()
+        f.clock.load(0.0, 0.0, 0.0, live = true)
+        f.clock.play()
+        for (i in 1..50) {
+            f.advance(100.0)
+            f.clock.extend(i * 100.0)
+        }
+        assertEquals(5000.0, f.clock.time)
+    }
+
+    @Test
+    fun `live, held at the end for a while, moves on from the new end, not from where it would have been`() {
+        val f = Fake()
+        f.clock.load(0.0, 0.0, 0.0, live = true)
+        f.clock.play()
+        f.advance(60_000.0)
+        // The edge is held back by a delay: the end jumps to 24 s, and the playhead waits there.
+        f.clock.extend(24_000.0)
+        assertEquals(24_000.0, f.clock.time)
+        f.clock.extend(40_000.0)
+        assertEquals(24_000.0, f.clock.time)
+        f.advance(100.0)
+        assertEquals(24_100.0, f.clock.time)
+    }
 }

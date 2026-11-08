@@ -11,6 +11,8 @@ import java.io.File
  */
 @Serializable
 data class Settings(
+    /** Which one-time changes to saved settings have been made; see `migrate`. */
+    val settingsVersion: Int = 0,
     val theme: String = "oled",
     val dimPanels: Boolean = false,
     val pixelShift: Boolean = true,
@@ -40,7 +42,22 @@ data class Settings(
     val videoQuality: String = PER_PLAYER,
 ) {
     fun delay(): Long = delays[viewing] ?: DEFAULT_DELAYS[viewing] ?: 0
+
+    /**
+     * Saved settings brought up to this build, as the desktop's migrateSettings. Each step runs once,
+     * for settings saved before it:
+     *  1. The in-app delay goes back to 0. F1 TV inside RaceWall drives the timing itself, so a
+     *     delay saved for it (Sync used to set one) only held the data behind the picture.
+     */
+    fun migrate(): Settings {
+        var s = this
+        if (settingsVersion < 1) s = s.copy(delays = DEFAULT_DELAYS + s.delays + ("in-app" to 0L))
+        return s.copy(settingsVersion = maxOf(settingsVersion, SETTINGS_VERSION))
+    }
 }
+
+/** The settings version this build writes. */
+const val SETTINGS_VERSION = 1
 
 /** How you watch, and its name. */
 val VIEWING = listOf(

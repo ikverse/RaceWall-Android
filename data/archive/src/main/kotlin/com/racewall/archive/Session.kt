@@ -52,7 +52,7 @@ class SessionModel(
      * When known (live timing), the UTC time of session time 0. Otherwise it is worked out from the
      * UTC times race control messages carry.
      */
-    private val base: Double? = null,
+    base: Double? = null,
     /** Wall-clock milliseconds, for retrying the circuit outline; tests pass a fake. */
     private val now: () -> Long = System::currentTimeMillis,
 ) {
@@ -82,6 +82,15 @@ class SessionModel(
     private var outline: CircuitOutline? = null
     private var outlineTried = Long.MIN_VALUE / 2
     private val anchors = ArrayList<Double>()
+    private var base: Double? = base
+    /** Race control messages and radio clips already kept: a reconnect's snapshot repeats them all. */
+    private val seen = HashSet<String>()
+
+    /** Sets the UTC time of session time 0, once live timing knows it from the server. */
+    @Synchronized
+    fun setBase(utc: Double) {
+        base = utc
+    }
 
     /** Whether car positions and telemetry are attached. */
     val hasCars: Boolean get() = cars != null
@@ -112,12 +121,18 @@ class SessionModel(
             end = maxOf(end, at)
             when (stream) {
                 "TimingData" -> history.add(at, data)
-                "RaceControlMessages" -> for (m in raceControlMessages(at, data)) {
-                    messages.add(m)
-                    if (base == null && m.message.utc != 0L && anchors.size < 15) anchors.add(m.message.utc - at)
+                "RaceControlMessages" -> {
+                    // A snapshot (`_kf`, as live timing sends on connecting) holds old messages, all
+                    // stamped with the moment of connecting: their UTC times say nothing about this time.
+                    val snapshot = (data as? Map<*, *>)?.get("_kf") == true
+                    for (m in raceControlMessages(at, data)) {
+                        if (!seen.add("${m.message.utc}|${m.message.message}")) continue
+                        messages.add(m)
+                        if (base == null && !snapshot && m.message.utc != 0L && anchors.size < 15) anchors.add(m.message.utc - at)
+                    }
                 }
                 "WeatherData" -> weather.add(weatherSample(at, data))
-                "TeamRadio" -> clips.addAll(radioClips(at, data, ARCHIVE + info.path))
+                "TeamRadio" -> for (c in radioClips(at, data, ARCHIVE + info.path)) if (seen.add("clip|${c.clip.url}")) clips.add(c)
                 "SessionStatus" -> if (startedAt == null && (data as? Map<*, *>)?.get("Status") == "Started") startedAt = at
             }
         }
@@ -132,7 +147,7 @@ class SessionModel(
     /** Converts a session time to UTC milliseconds, or null when there is no anchor. */
     @Synchronized
     fun utcAt(t: Double): Double? {
-        if (base != null) return base + t
+        base?.let { return it + t }
         if (anchors.isEmpty()) return null
         val sorted = anchors.sorted()
         return sorted[sorted.size / 2] + t
@@ -288,8 +303,12 @@ class SessionModel(
 }
 
 /** Builds a replay from archive files and offers its topics as the "f1-archive" source. */
-fun buildSession(files: SessionFiles, bus: Bus): SessionModel {
-    val model = SessionModel(bus, SOURCE, FeedJson.parse(stripBom(files.sessionInfo)))
+/**
+ * Builds a replay. `baseUtc`, when known (a recording that saved the UTC time of its time 0), ties
+ * session time to real time; otherwise race control messages' UTC times do.
+ */
+fun buildSession(files: SessionFiles, bus: Bus, baseUtc: Double? = null): SessionModel {
+    val model = SessionModel(bus, SOURCE, FeedJson.parse(stripBom(files.sessionInfo)), baseUtc)
     // Race control first, so the UTC anchor exists before anything needs it.
     val order = listOf("RaceControlMessages") + STREAMS.filter { it != "RaceControlMessages" }
     for (name in order) for (entry in parseStream(files.streams[name] ?: "")) model.add(name, entry.t, entry.data)

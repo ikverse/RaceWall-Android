@@ -72,9 +72,11 @@ class VideoEnv(
     /** Session time minus video time, per F1 TV content id, set once with "Mark the start". */
     val offsets: Map<String, Double>,
     val setOffset: (Long, Double) -> Unit,
-    val clockPlay: () -> Unit,
-    val clockPause: () -> Unit,
-    val clockSeek: (Double) -> Unit,
+    /**
+     * From the player that drives the clock, a few times a second: the session time of its picture,
+     * whether it plays, and whether it is stuck waiting for video.
+     */
+    val clockVideo: (time: Double, playing: Boolean, stalled: Boolean) -> Unit,
     /** The bottom bar's video quality, which overrides each player's own unless it is PER_PLAYER. */
     val quality: String = PER_PLAYER,
 )
@@ -190,6 +192,7 @@ fun VideoPanel(s: WidgetScope, onboard: Boolean = false) {
             override fun seekRange() = player.seekRange()
             override val live get() = envNow.session?.live != null
             override val loaded get() = player.loaded
+            override val seeking get() = player.exo.playbackState == Player.STATE_BUFFERING
         }
     }
     DisposableEffect(panelId) {
@@ -294,37 +297,49 @@ fun VideoPanel(s: WidgetScope, onboard: Boolean = false) {
 
     /** The leader drives the clock, and the players still following follow it. */
     var lastSync by remember { mutableLongStateOf(0L) }
+    var lastRunning by remember { mutableStateOf<Boolean?>(null) }
     fun onTime() {
         // Until a stream has loaded there is nothing to follow.
         if (!player.loaded || hub.leaderId() != panelId) return
-        for (f in hub.followers()) {
-            if (abs(f.currentTime - handle.currentTime) > 0.6) f.currentTime = handle.currentTime
-            if (f.paused != handle.paused) if (handle.paused) f.pause() else f.play()
-        }
+        // The players still following the timing follow this one.
+        hub.syncFollowers(handle)
         val t = handle.sessionTime()
         hub.driving = t != null
         if (t == null) return
         // The session clock follows the main player: it runs while the picture plays, and stops with
-        // it, set to the picture's exact moment.
-        val running = !handle.paused && player.ready
-        val e = envNow
-        if (running != e.frame.clock.playing) {
-            if (running) e.clockPlay() else {
-                e.clockPause()
-                e.clockSeek(t)
-            }
-        }
-        // Drift between the two is corrected at most four times a second.
+        // it, set to the picture's exact moment. The core is told when that changes and otherwise
+        // four times a second; live, a player that stops telling it, or is stuck buffering, soon
+        // hands the data back to the live edge.
+        val playing = !handle.paused
+        val running = playing && player.ready
         val now = System.currentTimeMillis()
-        if (now - lastSync < 250) return
+        if (running == lastRunning && now - lastSync < 250) return
+        lastRunning = running
         lastSync = now
-        if (abs(e.frame.clock.time - t) > 400) e.clockSeek(t)
+        envNow.clockVideo(t, playing, playing && !running)
+    }
+
+    /** While loading or buffering: since when, to say when it takes too long. */
+    var waitingSince by remember { mutableStateOf<Long?>(null) }
+    var waitText by remember { mutableStateOf("") }
+    fun waiting(): String {
+        val loading = channel != null && streamKey.isNotEmpty() && streamKey != NO_STREAM && !player.loaded && problem.isEmpty()
+        val buffering = player.loaded && player.exo.playWhenReady && player.exo.playbackState == Player.STATE_BUFFERING
+        if (!loading && !buffering) {
+            waitingSince = null
+            return ""
+        }
+        val now = System.currentTimeMillis()
+        val since = waitingSince ?: now.also { waitingSince = it }
+        if (now - since > 10_000) return "The video has not moved for 10 seconds. F1 TV may be slow right now: try another channel, or a lower quality."
+        return if (loading) "Loading video…" else "Buffering…"
     }
     LaunchedEffect(Unit) {
         while (true) {
             onTime()
             val r = player.seekRange()
             view = View(handle.paused, handle.currentTime, r.start, r.endInclusive, envNow.session?.live != null)
+            waitText = waiting()
             if (controls && System.currentTimeMillis() - touched > 4000) controls = false
             delay(250)
         }
@@ -382,7 +397,7 @@ fun VideoPanel(s: WidgetScope, onboard: Boolean = false) {
             idle -> ""
             problem.isNotEmpty() -> problem
             details == null -> if (env.session != null) "Finding the F1 TV video…" else "Pick a session to watch."
-            else -> ""
+            else -> waitText
         }
         if (message.isNotEmpty()) {
             Box(Modifier.fillMaxSize().padding(20.dp), contentAlignment = Alignment.Center) {

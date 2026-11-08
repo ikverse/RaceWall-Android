@@ -163,7 +163,7 @@ class LiveReplayTest {
     fun `a recording reads back as the same records`() = runTest {
         val dir = Files.createTempDirectory("racewall-rec").toFile()
         try {
-            val rec = Recorder(dir, this)
+            val rec = Recorder(dir, 0.0, this)
             val original = parseStream(read("LapCount.jsonStream"))
             for (e in original) rec.add("LapCount", e.t, e.data)
             rec.add("Position.z", 1234.0, "base64text==")
