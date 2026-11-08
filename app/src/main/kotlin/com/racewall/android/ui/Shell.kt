@@ -1,6 +1,19 @@
 package com.racewall.android.ui
 
 import androidx.compose.animation.core.animateFloatAsState
+import com.racewall.android.R
+import com.racewall.android.SessionMeta
+import com.racewall.android.OnNow
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Row
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
@@ -123,6 +136,8 @@ fun RaceWallApp(screen: Screen, actions: AppActions, videoDriving: Boolean = fal
     var drawer by rememberSaveable { mutableStateOf<String?>(null) }
     var commandBar by rememberSaveable { mutableStateOf(false) }
     var picker by rememberSaveable { mutableStateOf(false) }
+    /** The session whose LIVE banner was closed: it stays closed for that session only. */
+    var bannerClosed by rememberSaveable { mutableStateOf("") }
     var signingIn by remember { mutableStateOf(false) }
     val settings = screen.settings
     val layouts by rememberUpdatedState(screen.layouts)
@@ -164,14 +179,13 @@ fun RaceWallApp(screen: Screen, actions: AppActions, videoDriving: Boolean = fal
     val shiftX by animateFloatAsState(shift.first.toFloat(), tween(1200), label = "shiftX")
     val shiftY by animateFloatAsState(shift.second.toFloat(), tween(1200), label = "shiftY")
 
-    // Race layout while live, Between sessions after, when the user wants that.
+    // Between sessions once a live session ends, when the user wants that. Going live never changes the layout.
     var lastMode by remember { mutableStateOf<Mode?>(null) }
     LaunchedEffect(screen.mode) {
         val previous = lastMode
         lastMode = screen.mode
         if (!settings.autoLayout || previous == null || previous == screen.mode) return@LaunchedEffect
-        if (screen.mode == Mode.LIVE) switchTo(layouts, "Race", actions)
-        else if (screen.mode == Mode.IDLE && previous == Mode.LIVE) switchTo(layouts, "Between sessions", actions)
+        if (screen.mode == Mode.IDLE && previous == Mode.LIVE) switchTo(layouts, "Between sessions", actions)
     }
 
     val titleActions = TitleActions(
@@ -222,6 +236,9 @@ fun RaceWallApp(screen: Screen, actions: AppActions, videoDriving: Boolean = fal
     ) {
         Column(Modifier.fillMaxSize()) {
             TitleBar(layouts, edit, drawer == "settings", WIDGETS, chromeAlpha, titleActions)
+            liveBanner(screen.ui.onNow, screen.ui.session, bannerClosed)?.let { on ->
+                LiveBanner(on, chromeAlpha, onWatch = actions::goLive, onClose = { bannerClosed = bannerKey(on) })
+            }
             Box(Modifier.weight(1f).fillMaxWidth().alpha(stageAlpha).offset(shiftX.dp, shiftY.dp)) {
                 PanelCanvas(
                     layouts = layouts,
@@ -310,8 +327,7 @@ private fun SettingsSections(screen: Screen, actions: AppActions, signingIn: Boo
     })
 
     Section("Live timing")
-    Option("Connect when a session is on", "From 15 minutes before; never interrupts a replay you chose") { Switch(s.autoLive, "Connect when a session is on") { set(s.copy(autoLive = it)) } }
-    Option("Switch layouts by themselves", "Race while live, Between sessions after") { Switch(s.autoLayout, "Switch layouts by themselves") { set(s.copy(autoLayout = it)) } }
+    Option("Switch layouts by themselves", "Between sessions when a live session ends") { Switch(s.autoLayout, "Switch layouts by themselves") { set(s.copy(autoLayout = it)) } }
     Option("How you watch", "Sets how far data is held back to match your picture. Starting points only: press Sync once to set yours.") {
         RwSelect(s.viewing, VIEWING, { set(s.copy(viewing = it)) }, "How you watch", fontSize = 13f, maxWidth = 170f, openUpwards = false)
     }
@@ -321,6 +337,7 @@ private fun SettingsSections(screen: Screen, actions: AppActions, signingIn: Boo
 
     Section("Notifications")
     Option("A session starts soon", "15 minutes before") { Switch(s.notifySoon, "A session starts soon") { set(s.copy(notifySoon = it)) } }
+    Option("A session goes live", "At its start, with a Watch live button, even when RaceWall is closed") { Switch(s.notifyLive, "A session goes live") { set(s.copy(notifyLive = it)) } }
     Option("Red flag", "While following a live session") { Switch(s.notifyRed, "Red flag") { set(s.copy(notifyRed = it)) } }
     Option("Safety car", "Safety car and virtual safety car") { Switch(s.notifySafetyCar, "Safety car") { set(s.copy(notifySafetyCar = it)) } }
 
@@ -336,4 +353,34 @@ private fun SettingsSections(screen: Screen, actions: AppActions, signingIn: Boo
         }
     }
     if (u.state != "error") BasicText(u.message.ifEmpty { "Updates come from the RaceWall releases on GitHub." }, style = Rw.text(11f, Rw.t3), modifier = androidx.compose.ui.Modifier.padding(start = 16.dp, end = 16.dp))
+}
+
+/** The session the LIVE banner offers: one that is on, while you are not on live timing, unless closed. As the desktop's `liveBanner`. */
+fun liveBanner(onNow: OnNow?, session: SessionMeta?, closed: String): OnNow? =
+    if (onNow == null || session?.live != null || closed == bannerKey(onNow)) null else onNow
+
+fun bannerKey(on: OnNow) = "${on.meeting}|${on.name}"
+
+/** A session is on and you are not on live timing: offer it, never switch by itself. As the desktop's LiveBanner.svelte. */
+@Composable
+private fun LiveBanner(on: OnNow, chromeAlpha: Float, onWatch: () -> Unit, onClose: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .height(40.dp)
+            .alpha(chromeAlpha)
+            .drawBehind { drawLine(Rw.border, Offset(0f, size.height - 0.5f), Offset(size.width, size.height - 0.5f), 1.dp.toPx()) }
+            .padding(horizontal = 12.dp)
+            .testTag("live-banner"),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Box(Modifier.size(7.dp).background(Rw.t1, CircleShape))
+            BasicText("LIVE", style = Rw.text(13f, Rw.t1).copy(fontWeight = FontWeight.SemiBold, letterSpacing = 0.8.sp))
+        }
+        BasicText("${on.meeting} · ${on.name}", style = Rw.text(13f, Rw.t1), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+        RwButton(onClick = onWatch, on = true, label = "Watch live") { c -> BasicText("Watch live", style = Rw.text(13f, c)) }
+        RwButton(onClick = onClose, label = "Close") { c -> Icon(R.drawable.ic_dismiss, c) }
+    }
 }

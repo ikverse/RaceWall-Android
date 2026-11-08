@@ -20,15 +20,15 @@ data class Settings(
     val lastSession: String? = null,
     /** Data sources, first asked first. */
     val sourceOrder: List<String> = DEFAULT_SOURCE_ORDER,
-    /** Connect to live timing on its own when a session is on. */
-    val autoLive: Boolean = true,
-    /** Switch to the Race layout when a session goes live, and Between sessions after. */
+    /** Switch to the Between sessions layout when a live session ends. Going live never changes the layout. */
     val autoLayout: Boolean = true,
     /** How you watch, which sets the broadcast delay. */
     val viewing: String = "in-app",
     /** The broadcast delay for each way of watching, in ms; Sync sets the current one. */
     val delays: Map<String, Long> = DEFAULT_DELAYS,
     val notifySoon: Boolean = true,
+    /** Notify at a session's scheduled start, with a "Watch live" button. RaceWall never goes live by itself. */
+    val notifyLive: Boolean = true,
     val notifyRed: Boolean = true,
     val notifySafetyCar: Boolean = true,
     val tray: Boolean = true,

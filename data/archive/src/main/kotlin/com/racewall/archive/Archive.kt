@@ -169,7 +169,7 @@ class Archive(
 
     /** Whether the archive marks the session complete, so its files can be cached. */
     @Suppress("UNCHECKED_CAST")
-    private suspend fun isComplete(dir: String): Boolean {
+    suspend fun isComplete(dir: String): Boolean {
         val info = download("${dir}SessionInfo.json", false)?.let { FeedJson.parse(stripBom(it)) as? Map<String, Any?> }
         return (info?.get("ArchiveStatus") as? Map<String, Any?>)?.get("Status") == "Complete"
     }

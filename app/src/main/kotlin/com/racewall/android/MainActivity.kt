@@ -14,11 +14,10 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.os.Build
 import androidx.activity.result.contract.ActivityResultContracts
+import android.content.Intent
+import com.racewall.android.live.Alerts
 import com.racewall.android.live.LiveService
 import com.racewall.android.live.Notify
-import com.racewall.live.LiveScheduler
-import com.racewall.topics.Schedule
-import com.racewall.topics.Topic
 import com.racewall.topics.TrackFlag
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -103,25 +102,25 @@ class CoreViewModel(app: Application) : AndroidViewModel(app), AppActions {
         return F1Tv.play(contentId, channelId, token)
     }
 
-    // Declared before init: the schedule loop below runs straight away and uses them.
-    private val announced = HashSet<String>()
-
-    /** Sessions live timing already took over for, so leaving one for a replay is not undone. */
-    private val takenOver = HashSet<String>()
-
     init {
         Notify.channels(app)
         core.setOrder(_settings.value.sourceOrder)
         core.setDelay(_settings.value.delay())
         subscribe()
         core.start()
+        // The schedule saved last time: what is on now is known at once, before anything loads.
+        scheduleTick()
         // As the desktop does at start: the most recent race or sprint, at its end.
         viewModelScope.launch { core.loadLastResult() }
-        // Every 30 seconds: go live when a session is on, go back afterwards, and announce sessions.
+        // A fresh schedule now and every 6 hours; every 30 seconds, announce sessions and leave a live one that is over.
         viewModelScope.launch {
             while (true) {
+                Alerts.refresh(app)
                 scheduleTick()
-                delay(30_000)
+                repeat(6 * 60 * 2) {
+                    delay(30_000)
+                    scheduleTick()
+                }
             }
         }
         // A minute after start, if wanted, as the desktop does; never in a debug build.
@@ -145,31 +144,22 @@ class CoreViewModel(app: Application) : AndroidViewModel(app), AppActions {
         })
     }
 
+    /** Announces sessions and says what is on now; RaceWall never goes live by itself. */
     private fun scheduleTick() {
-        val s = _settings.value
-        val schedule = core.bus.typed<Schedule>(Topic.SCHEDULE, 0.0) ?: emptyList()
         val now = System.currentTimeMillis()
-        if (s.notifySoon) for (soon in LiveScheduler.startingSoon(schedule, now, announced)) {
-            announced.add(LiveScheduler.key(soon))
-            val at = java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT).format(java.util.Date(soon.start!!))
-            Notify.alert(getApplication(), "${soon.name} starts soon", "${soon.meeting}, $at")
-        }
-        val on = LiveScheduler.sessionNow(schedule, now)
+        val on = Alerts.check(getApplication(), _settings.value, core.isLive(), now)
         core.setOnNow(on?.let { OnNow(it.meeting, it.name) })
-        // Going live by hand counts too: leaving afterwards is the user's choice.
-        if (on != null && core.isLive()) takenOver.add(LiveScheduler.key(on))
-        if (s.autoLive && LiveScheduler.shouldTakeOver(on, core.isLive(), takenOver)) {
-            takenOver.add(LiveScheduler.key(on!!))
-            core.goLive(account.current())
-        }
         if (core.isLive()) {
             val ended = core.liveEnded()
             val quiet = now - core.lastMessage() > 20 * 60_000
-            if ((ended != null && now - ended > 15 * 60_000) || (on == null && quiet)) {
-                core.stopLive()
-                viewModelScope.launch { core.loadLastResult() }
-            }
+            if ((ended != null && now - ended > 15 * 60_000) || (on == null && quiet)) leaveLive()
         }
+    }
+
+    /** "Watch live" from a notification: live timing, or back to the live moment. From the activity, so the live service may start. */
+    fun watchLive() {
+        Notify.clearLive(getApplication())
+        core.goLive(account.current())
     }
 
     /** The red flag and safety car notifications, while following a live session. */
@@ -200,9 +190,11 @@ class CoreViewModel(app: Application) : AndroidViewModel(app), AppActions {
         }
     }
 
+    /** Back to the last result: the session just watched, from its recording while the archive is still making it. */
     override fun leaveLive() {
+        val watched = core.livePath()
         core.stopLive()
-        viewModelScope.launch { core.loadLastResult() }
+        viewModelScope.launch { core.loadLastResult(watched) }
     }
 
     override suspend fun listRecordings(): List<Recording> = withContext(Dispatchers.IO) { core.listRecordings() }
@@ -303,6 +295,19 @@ class CoreViewModel(app: Application) : AndroidViewModel(app), AppActions {
 class MainActivity : ComponentActivity() {
     private val model: CoreViewModel by viewModels()
 
+    /** Opened from "Watch live": go straight into live timing, once. */
+    private fun handle(intent: Intent?) {
+        if (intent?.getBooleanExtra(Notify.EXTRA_WATCH_LIVE, false) != true) return
+        intent.removeExtra(Notify.EXTRA_WATCH_LIVE)
+        model.watchLive()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handle(intent)
+    }
+
     override fun onStop() {
         super.onStop()
         // Not while folding, unfolding or turning: the window comes straight back.
@@ -320,6 +325,7 @@ class MainActivity : ComponentActivity() {
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             registerForActivityResult(ActivityResultContracts.RequestPermission()) {}.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
+        if (savedInstanceState == null) handle(intent)
         setContent {
             val frame by model.core.frame.collectAsStateWithLifecycle()
             val ui by model.core.ui.collectAsStateWithLifecycle()
