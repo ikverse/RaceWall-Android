@@ -173,22 +173,34 @@ object Normalize {
 
     private val COMPOUNDS = setOf("SOFT", "MEDIUM", "HARD", "INTERMEDIATE", "WET")
 
-    fun stints(timingAppData: Any?): Stints {
+    /**
+     * Works out a stint's tyre age from more than the feed's own TotalLaps, which lags behind the lap
+     * count and arrives as 0 when the car comes in; see `tyreAge` in Extras.kt. `index` is the
+     * stint's own number in the feed.
+     */
+    fun interface TyreAge {
+        fun age(number: String, index: Int, startAge: Int, total: Int): Int
+    }
+
+    fun stints(timingAppData: Any?, age: TyreAge? = null): Stints {
         val out = LinkedHashMap<String, List<Stint>>()
         for ((num, value) in jsEntries(obj(obj(timingAppData)["Lines"]))) {
             var lap = 1
-            out[num] = list(obj(value)["Stints"]).map { raw ->
-                val s = obj(raw)
+            val raw = obj(value)["Stints"]
+            val keys = if (raw is List<*>) raw.indices.toList() else obj(raw).keys.filter { DIGITS.matches(it) }.map { it.toInt() }.sorted()
+            out[num] = list(raw).mapIndexed { i, one ->
+                val s = obj(one)
                 val total = number(s["TotalLaps"]).toInt()
                 val startAge = number(s["StartLaps"]).toInt()
+                val tyreAge = age?.age(num, keys[i], startAge, total) ?: total
                 val compound = str(s["Compound"]).uppercase()
                 val stint = Stint(
                     compound = if (compound in COMPOUNDS) Compound.valueOf(compound) else Compound.UNKNOWN,
                     isNew = bool(s["New"]),
-                    tyreAge = total,
+                    tyreAge = tyreAge,
                     startLap = lap,
                 )
-                lap += maxOf(0, total - startAge)
+                lap += maxOf(0, tyreAge - startAge)
                 stint
             }
         }
