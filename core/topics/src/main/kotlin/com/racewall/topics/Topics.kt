@@ -45,6 +45,8 @@ data class SessionInfo(
     val gmtOffset: String,
     /** The archive path, "2025/2025-07-06_British_Grand_Prix/2025-07-06_Race/". */
     val path: String,
+    /** F1's number for the circuit (Meeting.Circuit.Key), the same every season; 0 when unknown. */
+    val circuitKey: Int = 0,
 )
 
 enum class TrackFlag(val wire: String) { GREEN("green"), YELLOW("yellow"), SC("sc"), RED("red"), VSC("vsc"), VSC_ENDING("vsc-ending"), UNKNOWN("unknown") }
