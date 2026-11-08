@@ -344,6 +344,7 @@ class LiveTransportTest {
 
     private var live = 0
     private var syncs = 0
+    private var left = 0
     private val actions = object : TransportActions {
         override fun toggle() {}
         override fun seek(t: Double) {}
@@ -356,6 +357,9 @@ class LiveTransportTest {
         override fun syncDelay() {
             syncs++
         }
+        override fun leaveLive() {
+            left++
+        }
     }
 
     private fun show(ui: UiState, frame: Frame = Frame(ClockState(40_000.0, true, 1.0, 0.0, 52_000.0))) = compose.setContent {
@@ -367,14 +371,18 @@ class LiveTransportTest {
         SessionMeta(SessionInfo(0, 0, 0, "", "", "", "", "", "", "", ""), 0.0, 52_000.0, null, false, null, LiveInfo(status, "", following, 8_000))
 
     @Test
-    fun `shows Live, the delay and Sync, and offers Go live when behind the live moment`() {
+    fun `shows Live, offers Go live when behind, and keeps the delay, Sync and Leave live in the menu`() {
         show(UiState(session = meta(LiveStatus.CONNECTED, following = false)))
-        compose.onNodeWithText("Live").assertExists()
-        compose.onNodeWithText("Delay 8 s").assertExists()
-        compose.onNodeWithText("Go live (12 s behind)").performClick()
+        compose.onNodeWithText("LIVE").assertExists()
+        compose.onNodeWithText("−12 s · Go live").performClick()
         assertEquals(1, live)
+        compose.onNodeWithContentDescription("More").performClick()
+        compose.onNodeWithText("8 s").assertExists()
         compose.onNodeWithContentDescription("Sync").performClick()
         assertEquals(1, syncs)
+        compose.onNodeWithContentDescription("More").performClick()
+        compose.onNodeWithContentDescription("Leave live timing").performClick()
+        assertEquals(1, left)
     }
 
     @Test
@@ -386,9 +394,9 @@ class LiveTransportTest {
     @Test
     fun `offers to go live when a session is on`() {
         show(UiState(onNow = OnNow("Singapore Grand Prix", "Race")))
-        compose.onNodeWithText("Go live · Race").performClick()
-        assertEquals(1, live)
         compose.onNodeWithContentDescription("Pick a past session").performClick()
         compose.onNodeWithText("Live now: Singapore Grand Prix · Race").assertExists()
+        compose.onNodeWithContentDescription("Go live").performClick()
+        assertEquals(1, live)
     }
 }
