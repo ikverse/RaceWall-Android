@@ -223,21 +223,25 @@ class SessionModel(
 
     /**
      * One lap of the racing line. The typical lap time is the fastest quarter of laps, so slow laps
-     * behind the safety car do not stretch the window. Live, it is retried every ten seconds until a
-     * clean lap has been driven.
+     * behind the safety car do not stretch the window. Live, it is retried every five seconds until a
+     * clean lap has been driven. Joining mid-session, the positions start when RaceWall joined, so a
+     * lap from the first sample, and the last lap up to the newest, are tried as well: the outline
+     * then appears about a lap after joining rather than laps into the session.
      */
     @Synchronized
     private fun circuitOutline(): CircuitOutline? {
         outline?.let { return it }
         val c = cars ?: return null
         val time = now()
-        if (time - outlineTried < 10_000) return null
+        if (time - outlineTried < 5_000) return null
         outlineTried = time
         val times = history.events.mapNotNull { it.lap.ms }.sorted()
         val typical = if (times.isNotEmpty()) times[times.size / 4].toDouble() else 100_000.0
         val from = startedAt ?: if (start.isFinite()) start else 0.0
-        for (laps in listOf(5, 10, 20, 30, 2, 1)) {
-            val o = c.outline(from + typical * laps, typical) ?: continue
+        val froms = listOf(5, 10, 20, 30, 2, 1).map { from + typical * it }.toMutableList()
+        c.span()?.let { (first, last) -> froms += listOf(first, last - typical * 1.3) }
+        for (f in froms) {
+            val o = c.outline(f, typical) ?: continue
             return mark(o, c).also { outline = it }
         }
         return null

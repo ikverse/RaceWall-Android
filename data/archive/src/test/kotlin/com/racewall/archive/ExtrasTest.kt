@@ -141,6 +141,43 @@ class OutlineTextTest {
     }
 
     @Test
+    fun `keeps where the outline came from, and reads the desktop's files and older ones of its own`() {
+        val o = CircuitOutline(listOf(Triple(-1250.5, 300.0, 12.0), Triple(10.0, -4.25, 0.0)), com.racewall.topics.Bounds(-1250.5, 10.0, -4.25, 300.0), start = 1, sectors = 0 to 1)
+        val source = OutlineSource(2, "Silverstone", 2025, "2025/x/", "2025-07-06T15:00:00")
+        val text = OutlineText.write(o, source)
+        assertEquals(o, OutlineText.read(text))
+        assertEquals(source, OutlineText.source(text))
+        assertNull(OutlineText.source(OutlineText.write(o)))
+        val desktop = """{"points":[[-1250.5,300,12],[10,-4.25,0]],"bounds":{"minX":-1250.5,"maxX":10,"minY":-4.25,"maxY":300},"start":1,"sectors":[0,1],"source":{"key":2,"circuit":"Silverstone","year":2025,"session":"2025/x/","date":"2025-07-06T15:00:00"}}"""
+        assertEquals(o, OutlineText.read(desktop))
+        assertEquals(source, OutlineText.source(desktop))
+        val older = """{"points":[[-1250.5,300,12],[10,-4.25,0]],"bounds":[-1250.5,10,-4.25,300],"start":1,"sectors":[0,1]}"""
+        assertEquals(o, OutlineText.read(older))
+    }
+
+    @Test
+    fun `finds the circuit live about a lap after joining, however long the session has run`() {
+        // Joined mid-race: the session started when RaceWall joined, as far as it knows, and every car
+        // drives round a 5 km circle in 100 seconds from then on.
+        fun joined(seconds: Int): CircuitOutline? {
+            val model = SessionModel(Bus(), "f1-live", emptyMap<String, Any?>(), 0.0)
+            model.add("SessionStatus", 0.0, mapOf("Status" to "Started"))
+            val r = 50_000 / (2 * Math.PI)
+            for (t in 0L until seconds * 1000L step 250) {
+                val a = t / 100_000.0 * 2 * Math.PI
+                val entries = listOf("1", "4", "16", "63").withIndex().associate { (i, n) ->
+                    n to mapOf("Status" to "OnTrack", "X" to Math.round(r * Math.cos(a + i / 50.0)), "Y" to Math.round(r * Math.sin(a + i / 50.0)), "Z" to 0L)
+                }
+                model.add("Position.z", t.toDouble(), mapOf("Position" to listOf(mapOf("Timestamp" to Instant.ofEpochMilli(t).toString(), "Entries" to entries))))
+            }
+            return model.outlineNow()
+        }
+        assertNull(joined(60))
+        val outline = joined(115)!!
+        assertTrue(outline.bounds.maxX - outline.bounds.minX > 15_000)
+    }
+
+    @Test
     fun `reads nothing from a damaged file`() {
         assertNull(OutlineText.read("{\"points\":"))
         assertNull(OutlineText.read("[]"))

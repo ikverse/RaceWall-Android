@@ -76,6 +76,8 @@ class CoreViewModel(app: Application) : AndroidViewModel(app), AppActions {
         recordings = File(app.filesDir, "recordings"),
         onFlag = { flag, info -> flagNotice(flag, info) },
         circuits = File(app.filesDir, "circuits"),
+        // Circuit outlines that ship with the app, so the track map draws before any car has lapped.
+        bundled = { key -> runCatching { app.assets.open("circuits/$key.json").bufferedReader().use { it.readText() } }.getOrNull() },
     )
 
     private val settingsStore = JsonStore(File(app.filesDir, "settings.json"))

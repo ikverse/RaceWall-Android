@@ -5,6 +5,7 @@ import com.racewall.analysis.PitWindow
 import com.racewall.analysis.RaceTopics
 import com.racewall.archive.Archive
 import com.racewall.archive.ArchiveMeeting
+import com.racewall.archive.OutlineSource
 import com.racewall.archive.OutlineText
 import com.racewall.archive.SOURCE as ARCHIVE
 import com.racewall.archive.STREAMS
@@ -174,6 +175,8 @@ class Core(
     private val onFlag: (TrackFlag, SessionInfo) -> Unit = { _, _ -> },
     /** Where circuit outlines are saved, to show at once next time; null saves none. */
     private val circuits: File? = null,
+    /** The outline that ships with the app for a circuit key (assets/circuits), or null. */
+    private val bundled: (Int) -> String? = { null },
 ) {
     private class LiveState(
         var model: SessionModel,
@@ -190,7 +193,9 @@ class Core(
         /** Wall time the feed last said the session ended, if it did. */
         var endedAt: Long? = null,
         /** Whether this session's own outline has been saved for the next session at the circuit. */
-        var outlineSaved: Boolean = false,
+        @Volatile var outlineSaved: Boolean = false,
+        /** Wall time saving the outline was last tried: it is worked out at most every few seconds. */
+        var outlineSaveTried: Long = 0,
     )
 
     val bus = Bus()
@@ -268,13 +273,10 @@ class Core(
             if (l.following && abs(clock.time - edge) > 250) clock.seek(edge)
             updateMeta()
             // Live works its outline out after a clean lap; once it has, keep it for the next session here.
-            if (!l.outlineSaved) {
-                val file = outlineFile(l.model.info)
-                val outline = file?.let { l.model.outlineNow() }
-                if (file != null && outline != null) {
-                    l.outlineSaved = true
-                    scope.launch(Dispatchers.IO) { writeOutline(file, outline) }
-                }
+            if (!l.outlineSaved && now() - l.outlineSaveTried >= 10_000) {
+                l.outlineSaveTried = now()
+                val model = l.model
+                scope.launch(Dispatchers.IO) { if (saveOutline(model, live = true) && l.model === model) l.outlineSaved = true }
             }
             val status = bus.typed<SessionStatus>(Topic.SESSION_STATUS, clock.time)
             if (status != null && status.flag != l.lastFlag) {
@@ -391,32 +393,74 @@ class Core(
         scope.launch { loadJolpica(s.info) }
     }
 
-    /** Where the outline of this session's circuit is saved: one per circuit and season. */
-    private fun outlineFile(info: SessionInfo, year: Int = info.year): File? {
+    /** Where the outline of this session's circuit is saved: one file per circuit, by F1's circuit key. */
+    private fun outlineFile(info: SessionInfo): File? {
         val dir = circuits ?: return null
-        if (year == 0 || info.circuit.isEmpty()) return null
-        return File(dir, "$year-${info.circuit.replace(Regex("[^A-Za-z0-9]+"), "_")}.json")
+        return if (info.circuitKey == 0) null else File(dir, "${info.circuitKey}.json")
     }
 
-    private fun readOutline(f: File): CircuitOutline? = f.takeIf { it.isFile }?.let { runCatching { OutlineText.read(it.readText()) }.getOrNull() }
+    private fun readText(f: File): String = runCatching { if (f.isFile) f.readText() else "" }.getOrDefault("")
 
-    private fun writeOutline(f: File, o: CircuitOutline) {
-        runCatching { f.parentFile?.mkdirs(); f.writeText(OutlineText.write(o)) }
+    /**
+     * Outlines saved before circuit keys were used, one per season and circuit name
+     * ("2026-Interlagos.json"), up to this session's season, the newest first.
+     */
+    private fun legacyOutlines(info: SessionInfo): List<Pair<Int, String>> {
+        val dir = circuits ?: return emptyList()
+        if (info.year == 0 || info.circuit.isEmpty()) return emptyList()
+        val name = "-${info.circuit.replace(Regex("[^A-Za-z0-9]+"), "_")}.json"
+        return dir.listFiles().orEmpty()
+            .mapNotNull { f -> f.name.takeIf { it.endsWith(name) }?.removeSuffix(name)?.takeIf { it.length == 4 && it.all(Char::isDigit) }?.toInt() }
+            .filter { it <= info.year }
+            .sortedDescending()
+            .map { it to readText(File(dir, "$it$name")) }
+            .filter { OutlineText.read(it.second) != null }
+    }
+
+    private class SavedFile(val date: String, val text: String)
+
+    /**
+     * The outline saved at this circuit, newest first: the user's own file (by circuit key) or an
+     * older-style one (by season and name), whichever is from the later session. The date is the
+     * session's scheduled start; an older-style file only says its season. Null when none is saved.
+     */
+    private fun savedFile(info: SessionInfo): SavedFile? {
+        val own = outlineFile(info)?.let(::readText).orEmpty()
+        val keyed = if (OutlineText.read(own) != null) SavedFile(OutlineText.source(own)?.date ?: "", own) else null
+        val old = legacyOutlines(info).firstOrNull()?.let { SavedFile(it.first.toString(), it.second) }
+        return if (keyed != null && old != null) (if (keyed.date >= old.date) keyed else old) else keyed ?: old
     }
 
     /**
-     * The outline saved at this circuit this season or, as a circuit rarely changes, the newest
-     * earlier season's.
+     * The outline shown until this session has its own: the one saved at this circuit or, failing
+     * that, the one that ships with the app.
      */
     private fun savedOutline(info: SessionInfo): CircuitOutline? {
-        val own = outlineFile(info) ?: return null
-        readOutline(own)?.let { return it }
-        val name = own.name.removePrefix("${info.year}")
-        return own.parentFile?.listFiles().orEmpty()
-            .mapNotNull { f -> f.name.takeIf { it.endsWith(name) }?.removeSuffix(name)?.takeIf { it.length == 4 && it.all(Char::isDigit) }?.toInt() }
-            .filter { it < info.year }
-            .sortedDescending()
-            .firstNotNullOfOrNull { year -> outlineFile(info, year)?.let(::readOutline) }
+        savedFile(info)?.let { return OutlineText.read(it.text) }
+        if (info.circuitKey == 0) return null
+        return runCatching { bundled(info.circuitKey) }.getOrNull()?.let(OutlineText::read)
+    }
+
+    /**
+     * Keeps this session's own outline, to show at once next time at the same circuit. Live always
+     * saves, as it is the newest; a replay only when nothing is saved there or it is from a later
+     * session than what is. True once done, or once there is nothing more to do.
+     */
+    private fun saveOutline(s: SessionModel, live: Boolean): Boolean {
+        val info = s.info
+        // Live, the circuit is known only once the feed has said which session it is.
+        val file = outlineFile(info) ?: return !live || circuits == null
+        val date = info.startDate.ifEmpty { info.year.toString() }
+        if (!live) {
+            val saved = savedFile(info)
+            if (saved != null && date <= saved.date) return true
+        }
+        val o = s.outlineNow() ?: return false
+        runCatching {
+            file.parentFile?.mkdirs()
+            file.writeText(OutlineText.write(o, OutlineSource(info.circuitKey, info.circuit, info.year, info.path, date)))
+        }
+        return true
     }
 
     private fun useSavedOutline(s: SessionModel) {
@@ -448,11 +492,8 @@ class Core(
             say("Loading car positions…")
             val positions = file("Position.z")
             if (session !== s) return
-            val outline = withContext(Dispatchers.Default) {
-                s.attachPositions(positions)
-                s.outlineNow()
-            }
-            if (outline != null) outlineFile(s.info)?.let { f -> withContext(Dispatchers.IO) { writeOutline(f, outline) } }
+            withContext(Dispatchers.Default) { s.attachPositions(positions) }
+            withContext(Dispatchers.IO) { saveOutline(s, live = false) }
             tick()
             say("Loading telemetry…")
             val telemetry = file("CarData.z")
@@ -622,6 +663,7 @@ class Core(
         state.lastFlag = null
         state.endedAt = null
         state.outlineSaved = false
+        state.outlineSaveTried = 0
         useSession(state.model)
         clock.load(0.0, 0.0, 0.0)
         clock.play()

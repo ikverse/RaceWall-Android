@@ -7,6 +7,7 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import com.github.takahirom.roborazzi.ExperimentalRoborazziApi
@@ -149,6 +150,29 @@ class ScreenshotTest {
         view = "3d"
         compose.waitForIdle()
         compose.onNodeWithTag("panel-track-map-1").captureRoboImage("screenshots/desktop-size-singapore-track-3d.png")
+    }
+
+    /**
+     * Before the circuit outline is known (live, joined mid-session, at a circuit with no outline
+     * saved or shipped): the map is drawn from where the cars have been in the last minute and a half.
+     */
+    @Test
+    @Config(qualifiers = "w1600dp-h900dp-land-mdpi")
+    fun desktopSizeTrackBeforeOutline() {
+        fun noOutline(f: Frame) = f.copy(topics = f.topics - com.racewall.topics.Topic.CIRCUIT)
+        var t = BritishGp.CARS - 90_000
+        var frame by mutableStateOf(noOutline(BritishGp.frameAt(t)))
+        compose.setContent {
+            RaceWallTheme { RaceWallApp(Screen(frame, UiState(), Mode.REPLAY, Settings(fadeChrome = false), defaultLayouts().copy(active = "Race")), actions) }
+        }
+        // The map keeps where the cars have been as it draws, and the test draws only when asked.
+        while (t <= BritishGp.CARS) {
+            frame = noOutline(BritishGp.frameAt(t))
+            compose.waitForIdle()
+            compose.onNodeWithTag("panel-track-map-1").captureToImage()
+            t += 1000
+        }
+        compose.onNodeWithTag("panel-track-map-1").captureRoboImage("screenshots/desktop-size-track-before-outline.png")
     }
 
     @Test

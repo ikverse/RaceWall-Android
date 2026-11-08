@@ -239,6 +239,19 @@ class CarData(private val utcToT: (Double) -> Double) {
      * to be one; a car through the pit lane or behind the safety car drives a different distance, so
      * only cars near the typical distance count.
      */
+    /** The session times of the first and newest position samples of any car, if there are any. */
+    @Synchronized
+    fun span(): Pair<Double, Double>? {
+        var first = Double.POSITIVE_INFINITY
+        var last = Double.NEGATIVE_INFINITY
+        for (s in pos.values) {
+            if (s.size == 0) continue
+            first = minOf(first, s.t(0))
+            last = maxOf(last, s.t(s.size - 1))
+        }
+        return if (first <= last) first to last else null
+    }
+
     @Synchronized
     fun outline(fromT: Double, lapMs: Double): CircuitOutline? {
         val candidates = ArrayList<Candidate>()
@@ -307,26 +320,54 @@ class CarData(private val utcToT: (Double) -> Double) {
     }
 }
 
+/** Which session a saved outline was worked out from. */
+data class OutlineSource(
+    /** The circuit's key in F1's systems, the same every season. */
+    val key: Int,
+    val circuit: String,
+    val year: Int,
+    /** The session's archive path, or "" for a live session not yet in the archive. */
+    val session: String,
+    /** The session's scheduled start, ISO 8601: a later one is a newer outline. */
+    val date: String,
+)
+
 /**
  * A circuit outline as JSON text, saved so the next session at the same circuit can show it straight
- * away, before its car positions have arrived.
+ * away, before its car positions have arrived. The same files as the desktop's, which also ships
+ * them with the app (assets/circuits); bounds are an object there, and a list in older files saved here.
  */
 object OutlineText {
-    fun write(o: CircuitOutline): String = FeedJson.write(
-        mapOf(
-            "points" to o.points.map { (x, y, z) -> listOf(x, y, z) },
-            "bounds" to listOf(o.bounds.minX, o.bounds.maxX, o.bounds.minY, o.bounds.maxY),
-            "start" to o.start,
-            "sectors" to o.sectors?.let { listOf(it.first, it.second) },
-        ),
+    fun write(o: CircuitOutline, source: OutlineSource? = null): String = FeedJson.write(
+        buildMap {
+            put("points", o.points.map { (x, y, z) -> listOf(x, y, z) })
+            put("bounds", mapOf("minX" to o.bounds.minX, "maxX" to o.bounds.maxX, "minY" to o.bounds.minY, "maxY" to o.bounds.maxY))
+            put("start", o.start)
+            put("sectors", o.sectors?.let { listOf(it.first, it.second) })
+            if (source != null) {
+                put("source", mapOf("key" to source.key, "circuit" to source.circuit, "year" to source.year, "session" to source.session, "date" to source.date))
+            }
+        },
     )
+
+    /** Where the outline in `text` came from, when the file says; older files do not. */
+    fun source(text: String): OutlineSource? = try {
+        val s = (FeedJson.parse(text) as Map<*, *>)["source"] as Map<*, *>
+        val date = s["date"] as String
+        OutlineSource((s["key"] as? Number)?.toInt() ?: 0, s["circuit"] as? String ?: "", (s["year"] as? Number)?.toInt() ?: 0, s["session"] as? String ?: "", date)
+    } catch (_: Exception) {
+        null
+    }
 
     /** The outline in `text`, or null when it is not one. */
     fun read(text: String): CircuitOutline? = try {
         val m = FeedJson.parse(text) as Map<*, *>
         fun num(v: Any?) = (v as Number).toDouble()
         val points = (m["points"] as List<*>).map { p -> (p as List<*>).let { Triple(num(it[0]), num(it[1]), num(it[2])) } }
-        val b = (m["bounds"] as List<*>).map(::num)
+        val b = when (val raw = m["bounds"]) {
+            is Map<*, *> -> listOf("minX", "maxX", "minY", "maxY").map { num(raw[it]) }
+            else -> (raw as List<*>).map(::num)
+        }
         val sectors = (m["sectors"] as? List<*>)?.let { (it[0] as Number).toInt() to (it[1] as Number).toInt() }
         if (points.isEmpty()) null else CircuitOutline(points, Bounds(b[0], b[1], b[2], b[3]), (m["start"] as? Number)?.toInt(), sectors)
     } catch (_: Exception) {
