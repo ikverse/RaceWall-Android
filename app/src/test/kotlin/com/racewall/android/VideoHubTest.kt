@@ -85,6 +85,38 @@ class VideoHubTest {
     }
 
     @Test
+    fun `is for the players of the same layout opened again, under the same ids, with an Onboard panel`() {
+        // Focused tab: the main player and an Onboard panel. Leave it, then come back.
+        hub.register("a", Fake())
+        hub.register("onboard", Fake(), canLead = false)
+        hub.unregister("a")
+        hub.unregister("onboard")
+        // The Onboard panel registers before the main player has loaded its stream.
+        hub.register("onboard", Fake(loaded = false), canLead = false)
+        hub.register("a", Fake(loaded = false))
+        assertTrue(hub.takeHandoff("a")!!.playing)
+    }
+
+    @Test
+    fun `is for a newcomer while only an Onboard panel from before is still here`() {
+        hub.register("a", Fake())
+        hub.register("onboard", Fake(), canLead = false)
+        hub.unregister("a")
+        hub.register("c", Fake(loaded = false))
+        assertTrue(hub.takeHandoff("c")!!.playing)
+    }
+
+    @Test
+    fun `is not for a newcomer while a player that stayed has the same id as one that left`() {
+        hub.register("a", Fake())
+        hub.register("b", Fake())
+        hub.unregister("a")
+        // A new player under the old id "a" does not stand in for "b", which is still here.
+        hub.register("a", Fake(loaded = false))
+        assertNull(hub.takeHandoff("a"))
+    }
+
+    @Test
     fun `is dropped when the session changes`() {
         hub.register("a", Fake())
         hub.unregister("a")

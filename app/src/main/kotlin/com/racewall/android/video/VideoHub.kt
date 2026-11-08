@@ -41,8 +41,12 @@ data class Handoff(
     val playing: Boolean,
     /** Whether a player that left had the sound. */
     var audible: Boolean,
-    /** The loaded players still registered when it was recorded: while any remains, it is theirs to continue. */
-    val others: List<String>,
+    /**
+     * The loaded players that could lead, still registered when it was recorded: while any remains,
+     * it is theirs to continue. Kept as the players themselves, not panel ids: a layout opened again
+     * brings new players under the same ids, and those carry on from the handoff.
+     */
+    val others: List<PlayerHandle>,
 )
 
 /**
@@ -99,7 +103,8 @@ class VideoHub(
         val sound = audible == panelId
         if (handle != null && (leading || sound)) {
             val kept = handoff?.takeIf { it.session == sessionKey() }
-            val others = players.filter { (id, p) -> id != panelId && p.loaded }.keys.toList()
+            // An Onboard panel that stays only follows: it cannot carry on by itself.
+            val others = players.filter { (id, p) -> id != panelId && p.loaded && id !in followOnly }.values.toList()
             handoff = Handoff(
                 session = sessionKey(),
                 behind = if (leading) (if (handle.live) maxOf(0.0, handle.seekRange().endInclusive - handle.currentTime) else null) else kept?.behind,
@@ -124,7 +129,7 @@ class VideoHub(
      */
     fun takeHandoff(panelId: String): Handoff? {
         val h = handoff ?: return null
-        if (h.session != sessionKey() || h.others.any { it in players }) {
+        if (h.session != sessionKey() || h.others.any { old -> players.values.any { it === old } }) {
             handoff = null
             return null
         }
