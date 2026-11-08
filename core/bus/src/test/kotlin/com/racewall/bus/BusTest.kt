@@ -179,4 +179,15 @@ class ValueStoreTest {
         assertEquals(3, s.size)
         assertEquals(listOf(null, "a", "a", "b2", "b2", "c"), listOf(5, 10, 15, 20, 25, 99).map { s.at(it.toDouble()) })
     }
+
+    @Test
+    fun `version names the answering source and its key, skipping sources with no value`() {
+        val bus = Bus()
+        bus.setOrder(listOf("a", "b"))
+        bus.provide("x", TopicProvider("a", { null }, version = { null }))
+        bus.provide("x", TopicProvider("b", { 1 }, version = { 7 }))
+        kotlin.test.assertEquals("b|7", bus.version("x", 0.0))
+        bus.provide("y", TopicProvider("a", { 1 }))
+        kotlin.test.assertNull(bus.version("y", 0.0))
+    }
 }

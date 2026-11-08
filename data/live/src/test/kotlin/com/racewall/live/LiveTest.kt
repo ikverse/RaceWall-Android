@@ -59,7 +59,7 @@ private class Setup(token: String? = null, scope: TestScope) {
             events.add("status ${status.name.lowercase()}${if (detail.isNotEmpty()) " $detail" else ""}")
         }
     }
-    val client = LiveClient(handlers, token, listOf("SessionInfo", "TimingData"), network, scope)
+    val client = LiveClient(handlers, token, listOf("SessionInfo", "TimingData"), network, scope, now = { scope.testScheduler.currentTime })
 }
 
 /** Ported from the desktop's packages/f1-live/test/live.test.ts. */
@@ -127,6 +127,70 @@ class LiveClientTest {
         s.client.stop()
         advanceTimeBy(120_000)
         assertEquals(2, s.sockets.size)
+    }
+
+    @Test
+    fun `reconnects after 30 seconds without a message, and not while messages arrive`() = runTest {
+        val s = Setup(scope = this)
+        s.client.start()
+        val socket = s.sockets[0]
+        socket.events.open()
+        socket.server("{}")
+        repeat(4) {
+            advanceTimeBy(15_000)
+            socket.server("""{"type":6}""")
+        }
+        assertEquals(1, s.sockets.size)
+        advanceTimeBy(36_000)
+        assertTrue("status error no data for 30 seconds" in s.events)
+        advanceTimeBy(2001)
+        runCurrent()
+        assertEquals(2, s.sockets.size)
+        s.client.stop()
+    }
+
+    @Test
+    fun `keeps one retry when a refused handshake is followed by the socket closing`() = runTest {
+        val s = Setup(scope = this)
+        s.client.start()
+        val socket = s.sockets[0]
+        socket.events.open()
+        socket.server("""{"error":"nope"}""")
+        socket.events.closed()
+        assertEquals(listOf("status error handshake refused: nope"), s.events.filter { it.startsWith("status error") })
+        // Two pending retries would both fire after 2 s and open two sockets.
+        advanceTimeBy(3000)
+        runCurrent()
+        assertEquals(2, s.sockets.size)
+        s.client.stop()
+    }
+
+    @Test
+    fun `a network change replaces the socket, and the old one's events are ignored`() = runTest {
+        val s = Setup(scope = this)
+        s.client.start()
+        val old = s.sockets[0]
+        old.events.open()
+        old.server("{}")
+        s.client.reconnectNow()
+        runCurrent()
+        assertEquals(2, s.sockets.size)
+        val fresh = s.sockets[1]
+        fresh.events.open()
+        fresh.server("{}")
+        val before = s.events.size
+        old.events.failed("socket closed")
+        old.server("""{"type":1,"target":"feed","arguments":["TimingData",{},"2026-10-11T12:00:01Z"]}""")
+        assertEquals(before, s.events.size)
+        advanceTimeBy(15_001)
+        // The new socket still pings: the old socket's end did not cancel its ping.
+        assertTrue(fresh.sent.any { it == """{"type":6}$RS""" })
+        repeat(4) {
+            advanceTimeBy(15_000)
+            fresh.server("""{"type":6}""")
+        }
+        assertEquals(2, s.sockets.size)
+        s.client.stop()
     }
 }
 

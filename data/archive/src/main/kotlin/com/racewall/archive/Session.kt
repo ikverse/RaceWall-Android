@@ -75,6 +75,10 @@ class SessionModel(
             Timeline<Any?, Any?>({ LinkedHashMap<String, Any?>() }, { s, d -> mergeFeed(s, d) }, pack = FeedJson::write, unpack = { FeedJson.parse(it as String) })
         }
     private val history = LapHistoryBuilder()
+    private val stintStarts = StintStarts()
+
+    /** Goes up whenever the session info changes. */
+    @Volatile private var infoVersion = 0
     private val messages = ArrayList<TimedMessage>()
     private val weather = ArrayList<WeatherEntry>()
     private val clips = ArrayList<TimedClip>()
@@ -98,6 +102,7 @@ class SessionModel(
     fun setInfo(raw: Any?) {
         rawInfo = raw ?: LinkedHashMap<String, Any?>()
         info = Normalize.sessionInfo(raw)
+        infoVersion++
     }
 
     /** Adds one record of a feed at session time `t`. Car feeds may come as base64 text. */
@@ -121,6 +126,7 @@ class SessionModel(
             end = maxOf(end, at)
             when (stream) {
                 "TimingData" -> history.add(at, data)
+                "TimingAppData" -> stintStarts.add(at, data)
                 "RaceControlMessages" -> {
                     // A snapshot (`_kf`, as live timing sends on connecting) holds old messages, all
                     // stamped with the moment of connecting: their UTC times say nothing about this time.
@@ -136,6 +142,15 @@ class SessionModel(
                 "SessionStatus" -> if (startedAt == null && (data as? Map<*, *>)?.get("Status") == "Started") startedAt = at
             }
         }
+    }
+
+    /**
+     * Adds laps driven before RaceWall joined a live session (from the archive or an earlier
+     * recording), with their UTC times. Returns how many were new.
+     */
+    fun backfillLaps(laps: List<BackfillLap>): Int {
+        val base = utcAt(0.0) ?: return 0
+        return history.backfill(laps.map { LapEvent(it.utc - base, it.number, it.lap) })
     }
 
     /** When a feed last changed at or before `t`, or null. Live, this tells when the leader crossed the line. */
@@ -160,28 +175,52 @@ class SessionModel(
 
     /** Offers every topic on the bus. Call once, after the first records. */
     fun register() {
-        val views: Map<String, (Double) -> Any?> = mapOf(
-            Topic.SESSION_INFO to { _ -> info },
-            Topic.SESSION_STATUS to { t -> Normalize.sessionStatus(state("SessionStatus", t), state("TrackStatus", t), state("LapCount", t)) },
-            Topic.DRIVERS_LIST to { t -> Normalize.drivers(state("DriverList", t)) },
-            Topic.TIMING_POSITIONS to { t -> Normalize.positions(state("TimingData", t)) },
-            Topic.TIMING_LAPS to { t -> Normalize.laps(state("TimingData", t)) },
-            Topic.TIMING_STINTS to { t -> Normalize.stints(state("TimingAppData", t)) },
-            Topic.LAP_HISTORY to { t -> if (tl.getValue("TimingData").length > 0) history.at(t) else null },
-            Topic.RACE_CONTROL to { t -> if (messages.isNotEmpty()) upTo(messages, t) { it.t }.map { it.message } else null },
-            Topic.WEATHER to { t ->
-                synchronized(this) {
-                    val i = lastAt(weather, t) { it.t }
-                    if (i < 0) null else weather[i].full
-                }
-            },
-            Topic.WEATHER_HISTORY to { _ ->
-                synchronized(this) { if (weather.isEmpty()) null else weather.map { WeatherSample(it.t, it.full.airTemp, it.full.trackTemp, it.full.rainfall) } }
-            },
-            Topic.RADIO to { t -> if (tl.getValue("TeamRadio").length > 0) upTo(clips, t) { it.t }.map { it.clip } else null },
+        fun ix(stream: String, t: Double): Int = tl.getValue(stream).let { synchronized(it) { it.indexAt(t) } }
+        fun count(stream: String): Int = tl.getValue(stream).let { synchronized(it) { it.length } }
+        fun <T> lastIn(list: List<T>, t: Double, time: (T) -> Double): Int = synchronized(this) { lastAt(list, t, time) }
+        val age = { t: Double -> Normalize.TyreAge { number, index, startAge, total -> tyreAge(stintStarts, history, number, index, t, startAge, total) } }
+        // Each view comes with a cheap key that changes whenever its value at t can, so the core works
+        // a value out again only when what it is built from has changed.
+        val views: Map<String, Pair<(Double) -> Any?, (Double) -> Any?>> = mapOf(
+            Topic.SESSION_INFO to ({ _: Double -> info } to { _: Double -> infoVersion }),
+            Topic.SESSION_STATUS to (
+                { t: Double -> Normalize.sessionStatus(state("SessionStatus", t), state("TrackStatus", t), state("LapCount", t)) } to
+                    { t: Double -> "${ix("SessionStatus", t)},${ix("TrackStatus", t)},${ix("LapCount", t)}" }
+                ),
+            Topic.DRIVERS_LIST to ({ t: Double -> Normalize.drivers(state("DriverList", t)) } to { t: Double -> ix("DriverList", t) }),
+            Topic.TIMING_POSITIONS to ({ t: Double -> Normalize.positions(state("TimingData", t)) } to { t: Double -> ix("TimingData", t) }),
+            Topic.TIMING_LAPS to ({ t: Double -> Normalize.laps(state("TimingData", t)) } to { t: Double -> ix("TimingData", t) }),
+            Topic.TIMING_STINTS to (
+                { t: Double -> Normalize.stints(state("TimingAppData", t), age(t)) } to
+                    { t: Double -> "${ix("TimingAppData", t)},${history.lapsVersion(t)}" }
+                ),
+            Topic.LAP_HISTORY to (
+                { t: Double -> if (count("TimingData") > 0) history.at(t) else null } to
+                    { t: Double -> if (count("TimingData") > 0) history.version(t) else null }
+                ),
+            Topic.RACE_CONTROL to (
+                { t: Double -> if (messages.isNotEmpty()) upTo(messages, t) { it.t }.map { it.message } else null } to
+                    { t: Double -> if (messages.isNotEmpty()) lastIn(messages, t) { it.t } else null }
+                ),
+            Topic.WEATHER to (
+                { t: Double ->
+                    synchronized(this) {
+                        val i = lastAt(weather, t) { it.t }
+                        if (i < 0) null else weather[i].full
+                    }
+                } to { t: Double -> lastIn(weather, t) { it.t }.takeIf { it >= 0 } }
+                ),
+            Topic.WEATHER_HISTORY to (
+                { _: Double -> synchronized(this) { if (weather.isEmpty()) null else weather.map { WeatherSample(it.t, it.full.airTemp, it.full.trackTemp, it.full.rainfall) } } } to
+                    { _: Double -> synchronized(this) { weather.size.takeIf { it > 0 } } }
+                ),
+            Topic.RADIO to (
+                { t: Double -> if (count("TeamRadio") > 0) upTo(clips, t) { it.t }.map { it.clip } else null } to
+                    { t: Double -> if (count("TeamRadio") > 0) lastIn(clips, t) { it.t } else null }
+                ),
         )
         bus.removeSource(source)
-        for ((name, view) in views) bus.register(name, source, view)
+        for ((name, view) in views) bus.provide(name, TopicProvider(source, view.first, version = view.second))
         if (cars != null) registerCars()
     }
 

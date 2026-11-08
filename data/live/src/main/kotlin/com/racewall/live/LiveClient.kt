@@ -45,6 +45,10 @@ val LIVE_TOPICS = listOf(
 private const val RS = '\u001e'
 private const val PING_MS = 15_000L
 
+/** The server pings every 15 seconds; this long without any message means the connection is dead. */
+const val SILENCE_MS = 30_000L
+private const val WATCH_MS = 5_000L
+
 enum class LiveStatus { CONNECTING, CONNECTED, RECONNECTING, CLOSED, ERROR }
 
 interface LiveHandlers {
@@ -128,11 +132,15 @@ class LiveClient(
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
     private val now: () -> Long = System::currentTimeMillis,
 ) {
-    private var ws: SocketLike? = null
+    /** The current socket; events from any other (closed after a failure, or replaced) are ignored. */
+    @Volatile private var ws: SocketLike? = null
     @Volatile private var stopped = false
     private var attempt = 0
+    /** The current socket's ping and silence watch; each socket has its own. */
     private var ping: Job? = null
+    private var watch: Job? = null
     private var retry: Job? = null
+    private val lock = Any()
     private val json = Json
 
     /** Wall-clock time of the last message from the server. */
@@ -146,22 +154,30 @@ class LiveClient(
 
     fun stop() {
         stopped = true
-        ping?.cancel()
-        retry?.cancel()
-        ws?.close()
-        ws = null
+        drop()
         handlers.status(LiveStatus.CLOSED)
+    }
+
+    /** Lets go of the current socket and its jobs, and any pending retry, so none can act again. */
+    private fun drop() {
+        val old = synchronized(lock) {
+            ping?.cancel()
+            watch?.cancel()
+            retry?.cancel()
+            ping = null
+            watch = null
+            retry = null
+            ws.also { ws = null }
+        }
+        runCatching { old?.close() }
     }
 
     /** The network changed, as from Wi-Fi to mobile data: reconnect at once rather than wait. */
     fun reconnectNow() {
         if (stopped) return
-        retry?.cancel()
-        ping?.cancel()
-        ws?.close()
-        ws = null
+        drop()
         attempt = maxOf(attempt, 1)
-        scope.launch { connect() }
+        synchronized(lock) { retry = scope.launch { connect() } }
     }
 
     private suspend fun connect() {
@@ -176,21 +192,29 @@ class LiveClient(
             @Suppress("UNCHECKED_CAST")
             val neg = FeedJson.parse(res.body ?: "{}") as? Map<String, Any?> ?: emptyMap()
             val id = (neg["connectionToken"] ?: neg["connectionId"]) as? String ?: throw IOException("negotiate gave no connection id")
+            if (stopped) return
             open("${LIVE_URL.replaceFirst(Regex("^https"), "wss")}?id=${java.net.URLEncoder.encode(id, "UTF-8")}", headers)
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
-            fail(e.message ?: e.toString())
+            if (!stopped) fail(e.message ?: e.toString())
         }
     }
 
     private fun open(url: String, headers: Map<String, String>) {
         var handshook = false
+        var me: SocketLike? = null
+        // Until `ws` is set below, events (OkHttp may call back at once) wait on the lock.
+        fun mine() = synchronized(lock) { me != null && ws === me } && !stopped
         lateinit var socket: SocketLike
-        socket = network.socket(url, headers, object : SocketEvents {
-            override fun open() = socket.send("""{"protocol":"json","version":1}$RS""")
+        synchronized(lock) {
+            socket = network.socket(url, headers, object : SocketEvents {
+            override fun open() {
+                if (mine()) socket.send("""{"protocol":"json","version":1}$RS""")
+            }
 
             override fun message(text: String) {
+                if (!mine()) return
                 lastMessage = now()
                 for (part in text.split(RS)) {
                     if (part.isEmpty()) continue
@@ -212,11 +236,15 @@ class LiveClient(
                             put("arguments", JsonArray(listOf(JsonArray(topics.map(::JsonPrimitive)))))
                         }
                         socket.send(json.encodeToString(kotlinx.serialization.json.JsonObject.serializer(), subscribe) + RS)
-                        ping?.cancel()
-                        ping = scope.launch {
-                            while (isActive) {
-                                delay(PING_MS)
-                                socket.send("""{"type":6}$RS""")
+                        synchronized(lock) {
+                            if (ws === socket) {
+                                ping?.cancel()
+                                ping = scope.launch {
+                                    while (isActive) {
+                                        delay(PING_MS)
+                                        socket.send("""{"type":6}$RS""")
+                                    }
+                                }
                             }
                         }
                         continue
@@ -239,29 +267,41 @@ class LiveClient(
             }
 
             override fun closed() {
-                ping?.cancel()
-                if (!stopped) fail("connection closed")
+                if (mine()) fail("connection closed")
             }
 
             // OkHttp reports a dropped connection as a failure, with no close after it.
             override fun failed(message: String) {
-                ping?.cancel()
-                if (!stopped) fail(message)
+                if (mine()) fail(message)
             }
-        })
-        ws = socket
+            })
+            me = socket
+            ws = socket
+            lastMessage = now()
+            watch = scope.launch {
+                while (isActive) {
+                    delay(WATCH_MS)
+                    if (mine() && now() - lastMessage > SILENCE_MS) fail("no data for ${SILENCE_MS / 1000} seconds")
+                }
+            }
+        }
     }
 
-    /** Tries again with growing pauses: 2, 4, 8 … up to 60 seconds. */
+    /**
+     * Closes the connection and tries again with growing pauses: 2, 4, 8 … up to 60 seconds. Only
+     * one retry is ever pending, however many ways the connection reports its end.
+     */
     private fun fail(detail: String) {
         if (stopped) return
+        drop()
         handlers.status(LiveStatus.ERROR, detail)
         attempt++
         val wait = minOf(60_000L, 2000L * (1L shl (attempt - 1).coerceAtMost(10)))
-        retry?.cancel()
-        retry = scope.launch {
-            delay(wait)
-            connect()
+        synchronized(lock) {
+            retry = scope.launch {
+                delay(wait)
+                connect()
+            }
         }
     }
 }
