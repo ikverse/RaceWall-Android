@@ -217,6 +217,39 @@ class LiveCoreTest {
         runBlocking { s.core.loadSession("recording:../../etc") }
         assertTrue("outside the recordings folder" in s.core.ui.value.error)
     }
+
+    /** A core after the British GP, with the archive saying `status`, and RaceWall's own recording of the race if `recorded`. */
+    private fun afterRace(status: String, recorded: Boolean): Core {
+        val dir = Files.createTempDirectory("racewall-rec").toFile()
+        if (recorded) {
+            val d = java.io.File(dir, BritishGp.PATH.trimEnd('/').replace('/', java.io.File.separatorChar)).apply { mkdirs() }
+            java.io.File(d, "SessionInfo.json").writeText(BritishGp.files.sessionInfo)
+            for ((name, text) in BritishGp.files.streams) java.io.File(d, "$name.jsonStream").writeText(text)
+        }
+        return Core(
+            BritishGp.archive(status),
+            CoroutineScope(SupervisorJob() + Dispatchers.Unconfined),
+            now = { java.time.Instant.parse("2025-07-07T10:00:00Z").toEpochMilli() },
+            openF1 = null,
+            jolpica = null,
+            recordings = dir,
+        )
+    }
+
+    @Test
+    fun `after live, the session just watched comes from its recording while the archive is still making it`() = runBlocking {
+        val recording = RECORDING + BritishGp.PATH.trimEnd('/')
+        afterRace("Generating", recorded = true).also { it.loadLastResult(BritishGp.PATH) }.let { c ->
+            assertEquals(recording, c.ui.value.session?.path)
+            assertTrue(c.ui.value.session?.lastResult == true)
+        }
+        // Without being told what was watched: the newest race, still from the recording.
+        assertEquals(recording, afterRace("Generating", recorded = true).also { it.loadLastResult() }.ui.value.session?.path)
+        // Once the archive is done with it, or with no recording, the archive's own.
+        assertEquals(BritishGp.PATH, afterRace("Complete", recorded = true).also { it.loadLastResult(BritishGp.PATH) }.ui.value.session?.path)
+        assertEquals(BritishGp.PATH, afterRace("Generating", recorded = false).also { it.loadLastResult(BritishGp.PATH) }.ui.value.session?.path)
+    }
+
 }
 
 /** The transport bar while live: the status, Go live when behind, the delay and Sync. */

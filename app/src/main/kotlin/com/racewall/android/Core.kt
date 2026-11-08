@@ -573,8 +573,14 @@ class Core(
         }
     }
 
-    /** The most recent race or sprint in the archive that has finished, loaded at its end. */
-    private suspend fun lastResult(): SessionMeta? {
+    /**
+     * The most recent race or sprint in the archive that has finished, loaded at its end. `watched`
+     * is the archive path of the live session just left: while the archive is still making that one
+     * (not "Complete"), RaceWall's own recording of it is shown instead. The same goes for the newest
+     * race or sprint when it was recorded here and the archive is not done with it.
+     */
+    private suspend fun lastResult(watched: String?): SessionMeta? {
+        if (watched != null) recorded(watched)?.let { return load(it, true) }
         val time = now()
         val year = Instant.ofEpochMilli(time).atZone(ZoneOffset.UTC).year
         for (y in listOf(year, year - 1)) {
@@ -582,9 +588,25 @@ class Core(
                 .flatMap { it.sessions }
                 .filter { (it.type == "Race" || it.name == "Sprint") && endUtc(it.endDate, it.gmtOffset) < time - 30 * 60_000 }
                 .sortedByDescending { endUtc(it.endDate, it.gmtOffset) }
-            if (sessions.isNotEmpty()) return load(sessions[0].path, true)
+            if (sessions.isNotEmpty()) return load(recorded(sessions[0].path) ?: sessions[0].path, true)
         }
         return null
+    }
+
+    /** RaceWall's own recording of an archive session, as a "recording:" path, while the archive is not done with it. */
+    private suspend fun recorded(archivePath: String): String? {
+        val root = recordings ?: return null
+        val parts = archivePath.split('/').filter { it.isNotEmpty() }
+        if (parts.isEmpty() || ".." in parts) return null
+        if (!File(root, parts.joinToString(File.separator) + File.separator + "SessionInfo.json").isFile) return null
+        val done = try {
+            archive.isComplete(parts.joinToString("/") + "/")
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            false
+        }
+        return if (done) null else RECORDING + parts.joinToString("/")
     }
 
     private suspend fun run(label: String, task: suspend () -> Unit) {
@@ -603,7 +625,7 @@ class Core(
 
     suspend fun loadSession(path: String) = run("Loading session…") { load(path, false) }
 
-    suspend fun loadLastResult() = run("Loading the last result…") { lastResult() }
+    suspend fun loadLastResult(watched: String? = null) = run("Loading the last result…") { lastResult(watched) }
 
     /** Nothing could load before, because the archive wanted a sign-in: try the last result again. */
     suspend fun afterSignIn() {
@@ -616,6 +638,9 @@ class Core(
     // ---------------------------------------------------------------- live
 
     fun isLive() = live != null
+
+    /** The archive path of the session live timing is on, once the feed said. */
+    fun livePath(): String? = live?.path
 
     /** Wall time the live feed last said the session ended, if it did. */
     fun liveEnded(): Long? = live?.endedAt
