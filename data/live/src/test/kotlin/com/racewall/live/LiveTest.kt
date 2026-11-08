@@ -186,9 +186,10 @@ class LiveSchedulerTest {
     )
 
     @Test
-    fun `connects from 15 minutes before a session until it can be over`() {
-        assertNull(LiveScheduler.sessionNow(schedule, at("2026-10-11T11:40:00Z")))
-        assertEquals("Race", LiveScheduler.sessionNow(schedule, at("2026-10-11T11:46:00Z"))?.name)
+    fun `is on from the scheduled start until it can be over`() {
+        assertNull(LiveScheduler.sessionNow(schedule, at("2026-10-11T11:46:00Z")))
+        assertNull(LiveScheduler.sessionNow(schedule, at("2026-10-11T11:59:59Z")))
+        assertEquals("Race", LiveScheduler.sessionNow(schedule, at("2026-10-11T12:00:00Z"))?.name)
         assertEquals("Race", LiveScheduler.sessionNow(schedule, at("2026-10-11T14:59:00Z"))?.name)
         assertNull(LiveScheduler.sessionNow(schedule, at("2026-10-11T15:01:00Z")))
         assertEquals("Qualifying", LiveScheduler.sessionNow(schedule, at("2026-10-10T14:30:00Z"))?.name)
@@ -198,19 +199,30 @@ class LiveSchedulerTest {
     fun `announces each session once, in the 15 minutes before it`() {
         val announced = mutableSetOf<String>()
         assertEquals(emptyList(), LiveScheduler.startingSoon(schedule, at("2026-10-11T11:40:00Z"), announced))
-        assertEquals(listOf("Race"), LiveScheduler.startingSoon(schedule, at("2026-10-11T11:50:00Z"), announced).map { it.name })
-        announced.add("17|Race")
+        val soon = LiveScheduler.startingSoon(schedule, at("2026-10-11T11:50:00Z"), announced)
+        assertEquals(listOf("Race"), soon.map { it.name })
+        announced.add(LiveScheduler.soonKey(soon[0]))
         assertEquals(emptyList(), LiveScheduler.startingSoon(schedule, at("2026-10-11T11:55:00Z"), announced))
     }
 
     @Test
-    fun `takes over once per session, even from a replay, and leaves a user who went back alone`() {
-        val taken = mutableSetOf<String>()
-        val race = LiveScheduler.sessionNow(schedule, at("2026-10-11T11:46:00Z"))
-        assertFalse(LiveScheduler.shouldTakeOver(null, false, taken))
-        assertFalse(LiveScheduler.shouldTakeOver(race, true, taken))
-        assertTrue(LiveScheduler.shouldTakeOver(race, false, taken))
-        taken.add(LiveScheduler.key(race!!))
-        assertFalse(LiveScheduler.shouldTakeOver(race, false, taken))
+    fun `says a session is live once, at its start, and also when RaceWall starts during it`() {
+        val announced = mutableSetOf<String>()
+        assertNull(LiveScheduler.goneLive(schedule, at("2026-10-11T11:59:00Z"), announced))
+        val race = LiveScheduler.goneLive(schedule, at("2026-10-11T12:00:30Z"), announced)
+        assertEquals("Race", race?.name)
+        announced.add(LiveScheduler.soonKey(race!!))
+        assertEquals("Race", LiveScheduler.goneLive(schedule, at("2026-10-11T12:01:00Z"), announced)?.name)
+        announced.add(LiveScheduler.liveKey(race))
+        assertNull(LiveScheduler.goneLive(schedule, at("2026-10-11T12:01:00Z"), announced))
+        assertEquals("Qualifying", LiveScheduler.goneLive(schedule, at("2026-10-10T14:00:00Z"), emptySet())?.name)
+    }
+
+    @Test
+    fun `wakes 15 minutes before each session and at its start`() {
+        assertEquals(at("2026-10-10T12:45:00Z"), LiveScheduler.nextAlarm(schedule, at("2026-10-10T08:00:00Z")))
+        assertEquals(at("2026-10-10T13:00:00Z"), LiveScheduler.nextAlarm(schedule, at("2026-10-10T12:45:00Z")))
+        assertEquals(at("2026-10-11T11:45:00Z"), LiveScheduler.nextAlarm(schedule, at("2026-10-10T13:00:00Z")))
+        assertNull(LiveScheduler.nextAlarm(schedule, at("2026-10-11T12:00:00Z")))
     }
 }

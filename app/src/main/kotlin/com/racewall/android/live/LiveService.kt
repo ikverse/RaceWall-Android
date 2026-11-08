@@ -23,6 +23,10 @@ object Notify {
     const val LIVE = "live"
     const val ALERTS = "alerts"
     private const val LIVE_ID = 1
+    /** The "is live" notification: one at a time, taken away once the user went live. */
+    const val GONE_LIVE_ID = 2
+    /** On the intent that opens RaceWall from "Watch live": go straight into live timing. */
+    const val EXTRA_WATCH_LIVE = "racewall.watchLive"
 
     fun channels(context: Context) {
         val m = context.getSystemService(NotificationManager::class.java) ?: return
@@ -41,6 +45,15 @@ object Notify {
         .setContentIntent(open(context))
         .build()
 
+    /** Opens RaceWall straight into live timing. Its own request code, so it never stands in for [open]. */
+    private fun watchLive(context: Context): PendingIntent =
+        PendingIntent.getActivity(
+            context,
+            1,
+            Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP).putExtra(EXTRA_WATCH_LIVE, true),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+
     /** A session starting soon, a red flag or the safety car, as the desktop's notifications. */
     fun alert(context: Context, title: String, body: String) {
         if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
@@ -53,6 +66,24 @@ object Notify {
             .build()
         NotificationManagerCompat.from(context).notify((title + body).hashCode(), n)
     }
+
+    /** A session is live: a tap, or Watch live, opens RaceWall straight into live timing. */
+    fun live(context: Context, title: String, body: String) {
+        if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
+        val watch = watchLive(context)
+        val n = NotificationCompat.Builder(context, ALERTS)
+            .setSmallIcon(R.drawable.ic_launcher_monochrome)
+            .setContentTitle(title)
+            .setContentText(body)
+            .setAutoCancel(true)
+            .setContentIntent(watch)
+            .addAction(0, "Watch live", watch)
+            .build()
+        NotificationManagerCompat.from(context).notify(GONE_LIVE_ID, n)
+    }
+
+    /** The user went live: the "is live" notification has done its job. */
+    fun clearLive(context: Context) = NotificationManagerCompat.from(context).cancel(GONE_LIVE_ID)
 
     const val ID = LIVE_ID
 }

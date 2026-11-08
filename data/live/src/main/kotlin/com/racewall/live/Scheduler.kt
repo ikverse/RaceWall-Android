@@ -4,35 +4,38 @@ import com.racewall.topics.Schedule
 import com.racewall.topics.ScheduledSession
 
 /**
- * Watches the season schedule, as the desktop's live-scheduler.ts: connects to live timing when a
- * session is about to start, goes back to the last result once it is over, and sends the "starting
- * soon" notification.
+ * Watches the season schedule, as the desktop's live-scheduler.ts: which session is on now, and
+ * which to announce, as "starts soon" 15 minutes before and as "is live" at its start. RaceWall
+ * never switches to live by itself; the user goes live from the notification, the banner or the bar.
  */
 object LiveScheduler {
-    const val CONNECT_BEFORE_MS = 15 * 60_000L
     const val SOON_MS = 15 * 60_000L
 
-    /** How long each kind of session can run, to know when live timing is worth keeping open. */
+    /** How long each kind of session can run, to know when it is still on. */
     private fun lengthMs(s: ScheduledSession): Long = when (s.name) {
         "Race" -> 3 * 3_600_000L
         "Sprint" -> (1.5 * 3_600_000).toLong()
         else -> 2 * 3_600_000L
     }
 
-    /** The session live timing should be open for right now, if any. */
+    /** A session's own key; the start time keeps round numbers of different seasons apart. */
+    fun key(s: ScheduledSession) = "${s.round}|${s.name}|${s.start}"
+    fun soonKey(s: ScheduledSession) = "soon|${key(s)}"
+    fun liveKey(s: ScheduledSession) = "live|${key(s)}"
+
+    /** The session that is on right now: from its scheduled start until it can be over. */
     fun sessionNow(schedule: Schedule, now: Long): ScheduledSession? =
-        schedule.firstOrNull { it.start != null && now >= it.start!! - CONNECT_BEFORE_MS && now <= it.start!! + lengthMs(it) }
+        schedule.firstOrNull { it.start != null && now >= it.start!! && now <= it.start!! + lengthMs(it) }
 
     /** Sessions that start within the next `SOON_MS` and have not been announced yet. */
     fun startingSoon(schedule: Schedule, now: Long, announced: Set<String>): List<ScheduledSession> =
-        schedule.filter { it.start != null && it.start!! > now && it.start!! - now <= SOON_MS && key(it) !in announced }
+        schedule.filter { it.start != null && it.start!! > now && it.start!! - now <= SOON_MS && soonKey(it) !in announced }
 
-    fun key(s: ScheduledSession) = "${s.round}|${s.name}"
+    /** The session that is on now, if its "is live" notification has not been sent yet. */
+    fun goneLive(schedule: Schedule, now: Long, announced: Set<String>): ScheduledSession? =
+        sessionNow(schedule, now)?.takeIf { liveKey(it) !in announced }
 
-    /**
-     * Whether to connect to live timing for the session that is on: once per session, even over a
-     * replay picked before it started. A session in `taken` was already joined once; if the user left
-     * it for a replay, that choice stands.
-     */
-    fun shouldTakeOver(on: ScheduledSession?, isLive: Boolean, taken: Set<String>): Boolean = on != null && !isLive && key(on) !in taken
+    /** The next moment worth waking for: 15 minutes before a session, or its start. Null when none is left. */
+    fun nextAlarm(schedule: Schedule, now: Long): Long? =
+        schedule.mapNotNull { it.start }.flatMap { listOf(it - SOON_MS, it) }.filter { it > now }.minOrNull()
 }
