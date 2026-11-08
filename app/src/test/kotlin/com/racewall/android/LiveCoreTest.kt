@@ -12,7 +12,10 @@ import com.racewall.android.ui.RaceWallTheme
 import com.racewall.android.ui.Transport
 import com.racewall.android.ui.TransportActions
 import com.racewall.archive.ArchiveMeeting
+import com.racewall.archive.OutlineSource
 import com.racewall.archive.OutlineText
+import com.racewall.archive.SessionModel
+import com.racewall.bus.Bus
 import com.racewall.clock.ClockState
 import com.racewall.live.LiveHandlers
 import com.racewall.live.LiveStatus
@@ -39,7 +42,7 @@ import kotlin.test.assertTrue
 /** Ported from the desktop's app/main/core.test.ts, with following the live edge and Sync. */
 class LiveCoreTest {
     private fun info(name: String, path: String) = mapOf(
-        "Meeting" to mapOf("Name" to "Singapore Grand Prix", "Number" to 17L, "Circuit" to mapOf("ShortName" to "Singapore"), "Country" to mapOf("Name" to "Singapore")),
+        "Meeting" to mapOf("Name" to "Singapore Grand Prix", "Number" to 17L, "Circuit" to mapOf("Key" to 61L, "ShortName" to "Singapore"), "Country" to mapOf("Name" to "Singapore")),
         "Key" to if (name == "Race") 2L else 1L,
         "Type" to name,
         "Name" to name,
@@ -53,7 +56,7 @@ class LiveCoreTest {
 
     private class Setup(val core: Core, val feed: LiveHandlers, val wall: () -> Long, val advance: (Long) -> Unit, val recordings: java.io.File, val circuits: java.io.File)
 
-    private fun connect(): Setup {
+    private fun connect(bundled: (Int) -> String? = { null }): Setup {
         var wall = 1_760_000_000_000L
         var handlers: LiveHandlers? = null
         val dir = Files.createTempDirectory("racewall-core").toFile()
@@ -74,6 +77,7 @@ class LiveCoreTest {
                 }
             },
             circuits = circuits,
+            bundled = bundled,
         )
         core.subscribe(setOf(Topic.TIMING_POSITIONS, Topic.SESSION_INFO))
         core.goLive(null)
@@ -119,7 +123,7 @@ class LiveCoreTest {
             }
             s.feed.message("Position.z", mapOf("Position" to listOf(mapOf("Timestamp" to java.time.Instant.ofEpochMilli(base + t).toString(), "Entries" to entries))), base + t)
         }
-        val file = s.circuits.resolve("2026-Singapore.json")
+        val file = s.circuits.resolve("61.json")
         assertFalse(file.exists())
         s.core.tick()
         // The file is written off the main thread.
@@ -127,6 +131,43 @@ class LiveCoreTest {
         while (!file.exists() && System.currentTimeMillis() < until) Thread.sleep(20)
         val saved = OutlineText.read(file.readText())!!
         assertTrue(saved.bounds.maxX - saved.bounds.minX > 15_000)
+        assertEquals(OutlineSource(61, "Singapore", 2026, race, "2026-10-11T20:00:00"), OutlineText.source(file.readText()))
+        s.core.stopLive()
+    }
+
+    @Test
+    fun `prefers the newest saved outline, by circuit key or by season, and else the one shipped with the app`() {
+        val s = connect(bundled = { key -> if (key == 61) OutlineText.write(square(7.0)) else null })
+        s.feed.snapshot("SessionInfo", info("Qualifying", quali))
+        assertEquals(square(7.0), outline(s.core))
+
+        s.circuits.resolve("2025-Singapore.json").writeText(OutlineText.write(square(2.0)))
+        s.feed.snapshot("SessionInfo", info("Qualifying", quali))
+        assertEquals(square(2.0), outline(s.core))
+
+        s.circuits.resolve("61.json").writeText(OutlineText.write(square(4.0), OutlineSource(61, "Singapore", 2025, "", "2025-10-05T20:00:00")))
+        s.feed.snapshot("SessionInfo", info("Qualifying", quali))
+        assertEquals(square(4.0), outline(s.core))
+
+        // An older-style file from this season is newer than a keyed one from last season.
+        s.circuits.resolve("2026-Singapore.json").writeText(OutlineText.write(square(3.0)))
+        s.feed.snapshot("SessionInfo", info("Qualifying", quali))
+        assertEquals(square(3.0), outline(s.core))
+        s.core.stopLive()
+    }
+
+    @Test
+    fun `lets a replay save its outline only where none is saved or it is from a later session`() {
+        val s = connect()
+        val save = Core::class.java.getDeclaredMethod("saveOutline", SessionModel::class.java, Boolean::class.javaPrimitiveType).apply { isAccessible = true }
+        fun replay(date: String) = SessionModel(Bus(), "test", info("Race", race) + ("StartDate" to date))
+        // Nothing saved: it wants to save, and has no outline of its own yet, so it will try again.
+        assertEquals(false, save.invoke(s.core, replay("2025-10-05T20:00:00"), false))
+        s.circuits.resolve("61.json").writeText(OutlineText.write(square(4.0), OutlineSource(61, "Singapore", 2025, "", "2025-10-05T20:00:00")))
+        // An earlier session leaves the saved one alone; a later one would replace it.
+        assertEquals(true, save.invoke(s.core, replay("2024-09-22T20:00:00"), false))
+        assertEquals(false, save.invoke(s.core, replay("2026-10-11T20:00:00"), false))
+        assertEquals(square(4.0), OutlineText.read(s.circuits.resolve("61.json").readText()))
         s.core.stopLive()
     }
 

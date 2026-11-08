@@ -66,6 +66,7 @@ object Normalize {
             name = str(s["Name"]),
             type = str(s["Type"]),
             circuit = str(obj(meeting["Circuit"])["ShortName"]),
+            circuitKey = number(obj(meeting["Circuit"])["Key"]).toInt(),
             country = str(obj(meeting["Country"])["Name"]),
             startDate = str(s["StartDate"]),
             gmtOffset = str(s["GmtOffset"]),
