@@ -7,9 +7,11 @@ import com.racewall.archive.Archive
 import com.racewall.archive.ArchiveMeeting
 import com.racewall.archive.OutlineText
 import com.racewall.archive.SOURCE as ARCHIVE
+import com.racewall.archive.RECORDING_META
 import com.racewall.archive.STREAMS
 import com.racewall.archive.SessionFiles
 import com.racewall.archive.SessionModel
+import com.racewall.archive.buildRecording
 import com.racewall.archive.buildSession
 import com.racewall.archive.endUtc
 import com.racewall.archive.stripBom
@@ -69,8 +71,17 @@ const val LIVE = "f1-live"
 /** A recorded path that points at a local recording. */
 const val RECORDING = "recording:"
 
-/** Live timing's state, for the transport bar. */
-data class LiveInfo(val status: LiveStatus, val detail: String, val following: Boolean, val delayMs: Long)
+/**
+ * An F1 TV player that stops telling the clock where it is, or is stuck waiting for video, for this
+ * long no longer drives it: the data goes on at the live edge until the picture moves again.
+ */
+private const val VIDEO_STALE_MS = 2000L
+
+/**
+ * Live timing's state, for the transport bar. `delayMs` is the delay in use: none while an F1 TV
+ * player in RaceWall drives the clock, which `video` says.
+ */
+data class LiveInfo(val status: LiveStatus, val detail: String, val following: Boolean, val delayMs: Long, val video: Boolean = false)
 
 /** What the loaded session is, as the desktop's SessionMeta. */
 data class SessionMeta(
@@ -174,11 +185,28 @@ class Core(
     private val onFlag: (TrackFlag, SessionInfo) -> Unit = { _, _ -> },
     /** Where circuit outlines are saved, to show at once next time; null saves none. */
     private val circuits: File? = null,
+    /** The replay clock's own steady milliseconds; tests pass the same fake as `now`. */
+    clockNow: () -> Double = { System.nanoTime() / 1e6 },
 ) {
+    /** What the F1 TV player that drives the clock last said, and when (wall ms). */
+    private class VideoReport(val t: Double, val playing: Boolean, val at: Long, val stalledSince: Long?)
+
     private class LiveState(
         var model: SessionModel,
-        /** UTC ms of session time 0: when RaceWall connected, or when the feed moved to a new session. */
+        /**
+         * UTC ms of session time 0, in the server's time: the Heartbeat of the first snapshot, else
+         * the first stamped message. Until either comes, the device's clock at connecting.
+         */
         var base: Long,
+        /** Whether `base` is the server's own time yet. */
+        var serverBase: Boolean = false,
+        /** Whether a stamped message has come: from then on a (reconnect's) snapshot goes at the edge, not at 0. */
+        var stamped: Boolean = false,
+        /** The server's clock minus the device's, as the stamped messages show it (less their travel time). */
+        var skew: Long = 0,
+        var video: VideoReport? = null,
+        /** True while an F1 TV player drives the clock: then no delay holds the data back. */
+        var videoDriving: Boolean = false,
         var client: LiveConnection? = null,
         /** The archive path of the session the feed is on, once it said. */
         var path: String? = null,
@@ -194,7 +222,7 @@ class Core(
     )
 
     val bus = Bus()
-    private val clock = Clock()
+    private val clock = Clock(clockNow)
     private var session: SessionModel? = null
     @Volatile private var live: LiveState? = null
     private var delayMs = 0L
@@ -260,12 +288,21 @@ class Core(
     /** Builds the frame for the clock's moment now. */
     fun tick() {
         live?.let { l ->
-            // The live edge is now, held back by the broadcast delay so data matches the picture.
-            val edge = maxOf(0.0, (now() - l.base - delayMs).toDouble())
-            clock.extend(edge)
-            // Play before seeking: a playhead sent to the very end would make play start over from 0.
-            if (l.following && !clock.playing) clock.play()
-            if (l.following && abs(clock.time - edge) > 250) clock.seek(edge)
+            // An F1 TV player in RaceWall drives the clock while it reports and is not stuck. Otherwise
+            // the live edge is now, held back by the broadcast delay so data matches the TV picture.
+            val wall = now()
+            val v = l.video
+            val driving = v != null && wall - v.at < VIDEO_STALE_MS && (v.stalledSince == null || wall - v.stalledSince < VIDEO_STALE_MS)
+            l.videoDriving = driving
+            val edge = maxOf(0.0, liveNow(l) - if (driving) 0.0 else delayMs.toDouble())
+            if (driving && v != null) {
+                val picture = v.t + if (v.playing && v.stalledSince == null) (wall - v.at).toDouble() else 0.0
+                clock.extend(maxOf(edge, picture))
+            } else {
+                clock.extend(edge)
+                if (l.following && !clock.playing) clock.play()
+                if (l.following && abs(clock.time - edge) > 250) clock.seek(edge)
+            }
             updateMeta()
             // Live works its outline out after a clean lap; once it has, keep it for the next session here.
             if (!l.outlineSaved) {
@@ -320,6 +357,40 @@ class Core(
         tick()
     }
 
+    /**
+     * The F1 TV player that drives the clock says where its picture is, a few times a second. The
+     * clock runs while it plays and stops with it, at its exact moment. Live, the clock may go up
+     * to the picture's time even where the live edge (held back by a delay) has not, and following
+     * the live edge is left as it was: a buffering stall must not leave the data behind for good.
+     */
+    fun videoReport(t: Double, playing: Boolean, stalled: Boolean) {
+        val was = clock.playing
+        val wall = now()
+        val l = live
+        var drive = true
+        if (l != null) {
+            val stalledSince = if (stalled) (l.video?.stalledSince ?: wall) else null
+            l.video = VideoReport(t, playing, wall, stalledSince)
+            // Stuck for a while: the live edge has the data until the picture moves again.
+            if (stalledSince != null && wall - stalledSince >= VIDEO_STALE_MS) drive = false
+            else {
+                l.videoDriving = true
+                clock.extend(t)
+            }
+        }
+        if (drive) {
+            val running = playing && !stalled
+            if (running) clock.play() else clock.pause()
+            if (abs(clock.time - t) > (if (running) 400.0 else 1.0)) clock.seek(t)
+        }
+        if (_ui.value.session?.lastResult == true) _ui.update { u -> u.copy(session = u.session?.copy(lastResult = false)) }
+        // Only a change of play or pause needs a frame before the next tick.
+        if (clock.playing != was) {
+            updateMeta()
+            tick()
+        }
+    }
+
     fun toggle() = command {
         clock.toggle()
         if (!clock.playing) live?.following = false
@@ -366,10 +437,12 @@ class Core(
     suspend fun listSeason(year: Int): List<ArchiveMeeting> = archive.fetchSeason(year)
 
     private suspend fun load(path: String, lastResult: Boolean): SessionMeta {
-        val files = if (path.startsWith(RECORDING)) withContext(Dispatchers.IO) { readRecording(path) } else archive.fetchSessionFiles(path)
+        val recording = path.startsWith(RECORDING)
+        val files = if (recording) withContext(Dispatchers.IO) { readRecording(path) } else archive.fetchSessionFiles(path)
+        val recordingMeta = if (recording) withContext(Dispatchers.IO) { readFile(recordingDir(path), RECORDING_META) } else ""
         stopLive()
         val meta = withContext(Dispatchers.Default) {
-            val s = buildSession(files, bus)
+            val s = if (recording) buildRecording(files, recordingMeta, bus) else buildSession(files, bus)
             useSession(s)
             val at = if (lastResult) s.end else maxOf(s.start, (s.startedAt ?: s.start) - LEAD_IN_MS)
             clock.load(s.start, s.end, at)
@@ -572,58 +645,119 @@ class Core(
         bus.removeSource(OpenF1.SOURCE)
         val state = LiveState(SessionModel(bus, LIVE, emptyMap<String, Any?>(), base.toDouble()), base)
         state.model.register()
-        fun add(topic: String, utc: Long, data: Any?) = synchronized(state) {
-            if (topic == "SessionInfo") {
-                val path = ((data as? Map<*, *>)?.get("Path") as? String)?.ifEmpty { null }
-                // The feed moved on to the next session: nothing of the last one may leak into it.
-                if (path != null && state.path != null && path != state.path) freshLive(state)
-                if (path != null) state.path = path
-                state.model.add("SessionInfo", (utc - state.base).toDouble(), data)
-                // Live, the circuit is known only now: show the one saved from an earlier session there.
-                useSavedOutline(state.model)
-                startRecording(state, data)
-                return@synchronized
+        live = state
+        useSession(state.model)
+        clock.load(0.0, 0.0, 0.0, live = true)
+        clock.play()
+        _ui.update { it.copy(error = "") }
+        updateMeta()
+        openClient(state, token)
+    }
+
+    /**
+     * After a sign-in during live timing: a new connection with the full feed, in place of the old
+     * one. The session, its lap history and its outline stay, and so does the recording.
+     */
+    fun reconnectLive(token: String?) {
+        val l = live ?: return
+        l.client?.stop()
+        openClient(l, token)
+    }
+
+    private fun openClient(state: LiveState, token: String?) {
+        // The connection these handlers belong to: an old one's late messages are not heard.
+        val ref = arrayOfNulls<LiveConnection>(1)
+        fun mine() = live === state && state.client === ref[0]
+        val client = connect(object : LiveHandlers {
+            override fun snapshot(topic: String, data: Any?) {
+                if (mine()) liveRecord(state, topic, data, null)
             }
-            state.model.add(topic, (utc - state.base).toDouble(), data)
-            state.recorder?.add(topic, (utc - state.base).toDouble(), data)
-            if (topic == "SessionStatus") {
-                when ((data as? Map<*, *>)?.get("Status")) {
-                    "Ends", "Finalised" -> if (state.endedAt == null) state.endedAt = now()
-                    "Started", "Inactive" -> state.endedAt = null
-                }
+
+            override fun message(topic: String, data: Any?, utc: Long) {
+                if (mine()) liveRecord(state, topic, data, utc)
             }
-        }
-        state.client = connect(object : LiveHandlers {
-            override fun snapshot(topic: String, data: Any?) = add(topic, now(), data)
-            override fun message(topic: String, data: Any?, utc: Long) = add(topic, utc, data)
+
             override fun status(status: LiveStatus, detail: String) {
+                if (state.client !== ref[0] && state.client != null) return
                 state.status = status
                 state.detail = detail
                 updateMeta()
             }
         }, token)
-        live = state
-        useSession(state.model)
-        clock.load(0.0, 0.0, 0.0)
-        clock.play()
-        _ui.update { it.copy(error = "") }
-        updateMeta()
-        scope.launch { state.client?.start() }
+        ref[0] = client
+        state.client = client
+        scope.launch { client.start() }
     }
 
-    /** Starts an empty live session, with time 0 now and a new recording, on the same connection. */
-    private fun freshLive(state: LiveState) {
+    /** Session time of the live edge: the server's time now. */
+    private fun liveNow(l: LiveState): Double = (now() + l.skew - l.base).toDouble()
+
+    private fun setLiveBase(state: LiveState, utc: Long) {
+        state.base = utc
+        state.serverBase = true
+        state.model.setBase(utc.toDouble())
+    }
+
+    /**
+     * One record of the live feed: `utc` is the server's time for a message, null for a snapshot.
+     * The first snapshot is the state at time 0, so the widgets fill at once; a reconnect's snapshot
+     * goes at the live edge.
+     */
+    private fun liveRecord(state: LiveState, topic: String, data: Any?, utc: Long?) = synchronized(state) {
+        if (utc != null) {
+            // The highest of (server time - arrival time) is the clocks' difference less the shortest
+            // travel time; it is let down slowly, in case the device's clock is moved.
+            val sample = utc - now()
+            state.skew = if (state.stamped) maxOf(state.skew - 1, sample) else sample
+            if (!state.stamped && !state.serverBase) setLiveBase(state, utc)
+            state.stamped = true
+        } else if (topic == "Heartbeat" && !state.stamped && !state.serverBase) {
+            val hb = ((data as? Map<*, *>)?.get("Utc") as? String)?.let { runCatching { Instant.parse(it).toEpochMilli() }.getOrNull() }
+            if (hb != null) setLiveBase(state, hb)
+        }
+        if (topic == "SessionInfo") {
+            val path = ((data as? Map<*, *>)?.get("Path") as? String)?.ifEmpty { null }
+            // The feed moved on to the next session: nothing of the last one may leak into it.
+            if (path != null && state.path != null && path != state.path) freshLive(state, utc ?: (now() + state.skew))
+            if (path != null) state.path = path
+        }
+        val t = when {
+            utc != null -> (utc - state.base).toDouble()
+            state.stamped -> liveNow(state)
+            else -> 0.0
+        }
+        if (topic == "SessionInfo") {
+            state.model.add("SessionInfo", t, data)
+            // Live, the circuit is known only now: show the one saved from an earlier session there.
+            useSavedOutline(state.model)
+            startRecording(state, data)
+            return@synchronized
+        }
+        state.model.add(topic, t, data)
+        state.recorder?.add(topic, state.base + t, data)
+        if (topic == "SessionStatus") {
+            when ((data as? Map<*, *>)?.get("Status")) {
+                "Ends", "Finalised" -> if (state.endedAt == null) state.endedAt = now()
+                "Started", "Inactive" -> state.endedAt = null
+            }
+        }
+    }
+
+    /** Starts an empty live session, with time 0 at `utc` and a new recording, on the same connection. */
+    private fun freshLive(state: LiveState, utc: Long) {
         state.recorder?.close()
         state.recorder = null
-        state.base = now()
-        state.model = SessionModel(bus, LIVE, emptyMap<String, Any?>(), state.base.toDouble())
+        state.model = SessionModel(bus, LIVE, emptyMap<String, Any?>(), utc.toDouble())
+        setLiveBase(state, utc)
         state.model.register()
         state.following = true
         state.lastFlag = null
         state.endedAt = null
         state.outlineSaved = false
+        state.video = null
+        state.videoDriving = false
         useSession(state.model)
-        clock.load(0.0, 0.0, 0.0)
+        clock.load(0.0, 0.0, 0.0, live = true)
         clock.play()
         updateMeta()
     }
@@ -644,7 +778,7 @@ class Core(
      */
     fun syncDelay(): Long? {
         val l = live ?: return null
-        val edge = (now() - l.base).toDouble()
+        val edge = liveNow(l)
         val crossing = l.model.lastChange("LapCount", edge) ?: return null
         if (edge - crossing > 5 * 60_000) return null
         setDelay((edge - crossing).toLong())
@@ -655,7 +789,8 @@ class Core(
     private fun updateMeta() {
         val l = live ?: return
         val s = l.model
-        val meta = SessionMeta(s.info, if (s.start.isFinite()) s.start else 0.0, (now() - l.base).toDouble(), s.startedAt, false, null, LiveInfo(l.status, l.detail, l.following, delayMs))
+        val info = LiveInfo(l.status, l.detail, l.following, if (l.videoDriving) 0 else delayMs, l.videoDriving)
+        val meta = SessionMeta(s.info, if (s.start.isFinite()) s.start else 0.0, liveNow(l), s.startedAt, false, null, info)
         _ui.update { u -> if (u.session == meta) u else u.copy(session = meta) }
     }
 
@@ -668,7 +803,7 @@ class Core(
         val path = ((info as? Map<*, *>)?.get("Path") as? String)?.ifEmpty { null }
             ?: "live/${Instant.ofEpochMilli(state.base).toString().take(16).replace(Regex("[:T]"), "-")}"
         try {
-            state.recorder = Recorder(File(root, path.split('/').filter { it.isNotEmpty() }.joinToString(File.separator))).also { it.writeInfo(info) }
+            state.recorder = Recorder(File(root, path.split('/').filter { it.isNotEmpty() }.joinToString(File.separator)), state.base.toDouble()).also { it.writeInfo(info) }
         } catch (_: Exception) {
             // Not recording is better than not following.
         }

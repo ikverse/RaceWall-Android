@@ -1,5 +1,7 @@
 package com.racewall.live
 
+import com.racewall.archive.RECORDING_META
+import com.racewall.archive.recordingBase
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -14,6 +16,7 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import java.io.File
+import java.time.Instant
 
 /** "HH:MM:SS.mmm" of session milliseconds, as the archive writes it. */
 fun stamp(ms: Double): String {
@@ -42,14 +45,34 @@ private fun element(v: Any?): JsonElement = when (v) {
  * recorder.ts: SessionInfo.json and one `.jsonStream` file per feed, each line "HH:MM:SS.mmm"
  * followed by the JSON (or, for the compressed car feeds, the quoted base64). So a recorded session
  * replays through the same reader as an archived one.
+ *
+ * `recording.json` says the UTC time of the recording's time 0. Recording again into the same
+ * folder, after an app restart or a sign-in, keeps that time 0, so its times carry on. `baseUtc` is
+ * used for a new recording; one already in `dir` keeps its own.
  */
-class Recorder(val dir: File, scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)) {
+class Recorder(val dir: File, baseUtc: Double, scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)) {
     private val started = HashSet<String>()
     private val buffer = LinkedHashMap<String, MutableList<String>>()
     private val timer: Job
 
+    /** UTC ms of the recording's time 0. */
+    val baseUtc: Double
+
     init {
         dir.mkdirs()
+        val meta = File(dir, RECORDING_META)
+        val saved = if (meta.isFile) recordingBase(meta.readText()) else null
+        val streams = dir.listFiles { f -> f.name.endsWith(".jsonStream") && f.length() > 0 }?.toList() ?: emptyList()
+        this.baseUtc = saved ?: baseUtc
+        when {
+            saved != null -> Unit
+            // Recorded before RaceWall kept recording.json: its time 0 is unknown. This run starts with
+            // a byte-order mark in every file, as before, so the replay can tell the runs apart.
+            streams.isNotEmpty() -> Unit
+            else -> meta.writeText("{\"baseUtc\":\"${Instant.ofEpochMilli(baseUtc.toLong())}\"}", Charsets.UTF_8)
+        }
+        // Files that already have records get no second byte-order mark.
+        if (saved != null) for (f in streams) started.add(f.name.removeSuffix(".jsonStream"))
         // Writes are batched once a second, so a busy feed does not hit the disk for every message.
         timer = scope.launch {
             while (isActive) {
@@ -64,12 +87,12 @@ class Recorder(val dir: File, scope: CoroutineScope = CoroutineScope(SupervisorJ
         File(dir, "SessionInfo.json").writeText("﻿" + toJson(info), Charsets.UTF_8)
     }
 
-    /** One record of a feed at session time `t` (ms from the start of the recording). */
+    /** One record of a feed at UTC ms `utc`. */
     @Synchronized
-    fun add(topic: String, t: Double, data: Any?) {
+    fun add(topic: String, utc: Double, data: Any?) {
         if (topic == "SessionInfo" || topic == "Heartbeat") return
         // Compressed car feeds arrive as base64 text and are stored quoted, as the archive does.
-        buffer.getOrPut(topic) { ArrayList() }.add(stamp(t) + toJson(data))
+        buffer.getOrPut(topic) { ArrayList() }.add(stamp(utc - baseUtc) + toJson(data))
     }
 
     @Synchronized
@@ -88,3 +111,4 @@ class Recorder(val dir: File, scope: CoroutineScope = CoroutineScope(SupervisorJ
         flush()
     }
 }
+

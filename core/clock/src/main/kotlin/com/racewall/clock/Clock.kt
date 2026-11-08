@@ -14,7 +14,8 @@ data class ClockState(
 /**
  * The replay clock. Session time is in milliseconds from the start of the session's data. It
  * moves with the wall clock times the speed while playing, and stays put while paused or after
- * reaching the end.
+ * reaching the end. A live clock is different at the end: the session is still growing, so it
+ * keeps playing there, held at the end until `extend` moves it, and play never rewinds.
  */
 class Clock(
     /** Wall-clock milliseconds; tests pass a fake one. */
@@ -26,12 +27,17 @@ class Clock(
     private var _speed = 1.0
     private var _start = 0.0
     private var _end = 0.0
+    private var _live = false
 
-    /** Sets the playable range and puts the playhead at `at` (default: start), paused. */
+    /**
+     * Sets the playable range and puts the playhead at `at` (default: start), paused. `live` is for
+     * a session that is still growing.
+     */
     @Synchronized
-    fun load(start: Double, end: Double, at: Double = start) {
+    fun load(start: Double, end: Double, at: Double = start, live: Boolean = false) {
         _start = start
         _end = maxOf(start, end)
+        _live = live
         _playing = false
         anchor(clamp(at))
     }
@@ -40,6 +46,7 @@ class Clock(
         @Synchronized get() {
             if (!_playing) return anchorTime
             val t = anchorTime + (now() - anchorWall) * _speed
+            if (t >= _end && _live) return _end
             if (t >= _end) {
                 _playing = false
                 anchor(_end)
@@ -59,7 +66,7 @@ class Clock(
     @Synchronized
     fun play() {
         if (_playing) return
-        if (anchorTime >= _end) anchor(_start) else anchor(anchorTime)
+        if (anchorTime >= _end && !_live) anchor(_start) else anchor(anchorTime)
         _playing = true
     }
 
@@ -88,6 +95,13 @@ class Clock(
     @Synchronized
     fun extend(end: Double) {
         if (end <= _end) return
+        // Live and playing, the playhead keeps its anchor and so runs on smoothly with the end. One
+        // that ran on past even the new end (it was held at the old one) starts again from the new end.
+        if (_live && _playing) {
+            _end = end
+            if (anchorTime + (now() - anchorWall) * _speed > end) anchor(end)
+            return
+        }
         val t = time
         val wasPlaying = _playing
         _end = end

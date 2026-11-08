@@ -80,7 +80,12 @@ class CoreViewModel(app: Application) : AndroidViewModel(app), AppActions {
 
     private val settingsStore = JsonStore(File(app.filesDir, "settings.json"))
     private val layoutsStore = JsonStore(File(app.filesDir, "layouts.json"))
-    private val _settings = MutableStateFlow(settingsStore.read(Settings()))
+    private val _settings = MutableStateFlow(
+        settingsStore.read(Settings()).let { saved ->
+            // A one-time change to settings saved by an older RaceWall is kept, so it is made only once.
+            saved.migrate().also { if (it != saved) settingsStore.write(it) }
+        },
+    )
     val settings: StateFlow<Settings> = _settings.asStateFlow()
     private val _layouts = MutableStateFlow(LayoutOps.migrate(layoutsStore.read(defaultLayouts())))
     val layouts: StateFlow<Layouts> = _layouts.asStateFlow()
@@ -266,11 +271,8 @@ class CoreViewModel(app: Application) : AndroidViewModel(app), AppActions {
     override suspend fun signedIn(token: String) {
         if (account.accept(token).signedIn) {
             core.afterSignIn()
-            // A sign-in during live timing reconnects with the full feed.
-            if (core.isLive()) {
-                core.stopLive()
-                core.goLive(account.current())
-            }
+            // A sign-in during live timing reconnects with the full feed, keeping what the session has.
+            if (core.isLive()) core.reconnectLive(account.current())
         }
     }
 
@@ -349,9 +351,7 @@ class MainActivity : ComponentActivity() {
                 play = { id, ch -> model.videoPlay(id, ch) },
                 offsets = settings.videoOffsets,
                 setOffset = model::setVideoOffset,
-                clockPlay = { model.core.play() },
-                clockPause = { model.core.pause() },
-                clockSeek = { model.core.seek(it) },
+                clockVideo = { t, playing, stalled -> model.core.videoReport(t, playing, stalled) },
                 quality = settings.videoQuality,
             )
             RaceWallTheme {
