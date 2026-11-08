@@ -64,9 +64,14 @@ class TransportTest {
     @Test
     fun `names the session, the lap, the UTC time and the source`() {
         show()
-        compose.onNodeWithText("British Grand Prix · Race 2025").assertExists()
-        compose.onNodeWithText("Lap 4 / 52 · 14:11:40 UTC").assertExists()
-        compose.onNodeWithText("Sources: F1 archive", substring = true).assertExists()
+        compose.onNodeWithText("British GP · Race 2025").assertExists()
+        compose.onNodeWithText("REPLAY").assertExists()
+        compose.onNodeWithText("4").assertExists()
+        compose.onNodeWithText("/52").assertExists()
+        // The time of day and the sources are in the ⋯ menu.
+        compose.onNodeWithContentDescription("More").performClick()
+        compose.onNodeWithText("14:11:40 UTC").assertExists()
+        compose.onNodeWithText("F1 archive", substring = true).assertExists()
     }
 
     @Test
@@ -86,7 +91,7 @@ class TransportTest {
     fun `the speed list sets the speed`() {
         val a = show()
         compose.onNodeWithTag("Speed").performClick()
-        compose.onNodeWithText("4x").performClick()
+        compose.onNodeWithText("4×").performClick()
         assertEquals(4.0, a.speed)
     }
 
