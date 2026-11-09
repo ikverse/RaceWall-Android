@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A home-screen widget: the picture RaceWall draws (home/Faces.kt), and, under a day before a
+     session, Android's own ticking countdown over its bottom-left corner. -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@android:id/background"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <ImageView
+        android:id="@+id/face"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:scaleType="fitXY" />
+
+    <Chronometer
+        android:id="@+id/tick"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|start"
+        android:layout_marginStart="13dp"
+        android:layout_marginBottom="14dp"
+        android:countDown="true"
+        android:fontFamily="sans-serif-light"
+        android:includeFontPadding="false"
+        android:importantForAccessibility="no"
+        android:textColor="#D0D0D0"
+        android:textSize="40dp"
+        android:visibility="gone" />
+</FrameLayout>

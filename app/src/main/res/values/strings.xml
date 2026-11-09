@@ -1,4 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">RaceWall</string>
+    <string name="home_widget_weekend_description">Countdown to the next session, or the last race\'s top three</string>
+    <string name="home_widget_schedule_description">The race weekend\'s sessions in your time</string>
+    <string name="home_widget_standings_description">Drivers\' or constructors\' championship</string>
+    <string name="home_widget_live_description">Live timing while you follow a session</string>
 </resources>

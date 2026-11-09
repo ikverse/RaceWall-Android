@@ -67,7 +67,11 @@ object Alerts {
         try {
             val res = OkHttpFetcher().get("${Jolpica.BASE}${year(System.currentTimeMillis())}.json", emptyMap())
             if (!res.ok) return@withContext null
-            Jolpica.parseSchedule(FeedJson.parse(res.body ?: "null")).also { saveSchedule(context, it) }
+            Jolpica.parseSchedule(FeedJson.parse(res.body ?: "null")).also {
+                saveSchedule(context, it)
+                // A new schedule moves the home-screen widgets' own redraw moments too.
+                com.racewall.android.home.HomeWidgets.arm(context)
+            }
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (_: Exception) {
@@ -119,6 +123,8 @@ object Alerts {
 class AlarmReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent?) {
         Alerts.check(context.applicationContext)
+        // A session starting is also when the home-screen widgets change.
+        com.racewall.android.home.HomeWidgets.redraw(context.applicationContext)
     }
 }
 
@@ -127,6 +133,8 @@ class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent?) {
         if (intent?.action !in ACTIONS) return
         Alerts.arm(context.applicationContext)
+        com.racewall.android.home.HomeWidgets.arm(context.applicationContext)
+        com.racewall.android.home.HomeWidgets.redraw(context.applicationContext)
     }
 
     private companion object {
