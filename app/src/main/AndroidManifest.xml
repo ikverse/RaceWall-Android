@@ -57,6 +57,56 @@
         <receiver
             android:name=".live.AlarmReceiver"
             android:exported="false" />
+        <!-- Home-screen widgets (home/): race weekend, schedule, standings and live timing. -->
+        <receiver
+            android:name=".home.WeekendWidgetReceiver"
+            android:exported="false"
+            android:label="Race weekend">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/home_widget_weekend" />
+        </receiver>
+        <receiver
+            android:name=".home.ScheduleWidgetReceiver"
+            android:exported="false"
+            android:label="Schedule">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/home_widget_schedule" />
+        </receiver>
+        <receiver
+            android:name=".home.StandingsWidgetReceiver"
+            android:exported="false"
+            android:label="Standings">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/home_widget_standings" />
+        </receiver>
+        <receiver
+            android:name=".home.LiveWidgetReceiver"
+            android:exported="false"
+            android:label="Live timing">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/home_widget_live" />
+        </receiver>
+        <receiver
+            android:name=".home.HomeTickReceiver"
+            android:exported="false" />
+        <activity
+            android:name=".home.HomeWidgetSettingsActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:taskAffinity=""
+            android:theme="@style/Theme.RaceWall">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_CONFIGURE" />
+            </intent-filter>
+        </activity>
         <receiver
             android:name=".live.BootReceiver"
             android:exported="true">

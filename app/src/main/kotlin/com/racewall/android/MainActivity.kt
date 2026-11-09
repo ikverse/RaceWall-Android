@@ -150,6 +150,15 @@ class CoreViewModel(app: Application) : AndroidViewModel(app), AppActions {
                 running = live
             }
         }
+        // The live home-screen widget, while live timing is followed: what the app shows, every 5 seconds when it changed.
+        viewModelScope.launch {
+            while (true) {
+                delay(com.racewall.android.home.HomeLiveFeed.EVERY_MS)
+                if (!core.isLive()) continue
+                val live = com.racewall.android.home.HomeLiveFeed.of(core.bus, core.frame.value.clock.time) ?: continue
+                withContext(Dispatchers.IO) { com.racewall.android.home.HomeLiveFeed.push(app, live) }
+            }
+        }
         // A network that comes back, or a switch from Wi-Fi to mobile data, reconnects live timing at once.
         connectivity?.registerDefaultNetworkCallback(networkCallback)
     }

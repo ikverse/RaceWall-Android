@@ -124,6 +124,12 @@ class LiveService : Service() {
         stopped()
     }
 
+    /** Live timing is no longer followed: the live home-screen widget goes back to the next session. */
+    override fun onDestroy() {
+        com.racewall.android.home.HomeLiveFeed.clear(applicationContext)
+        super.onDestroy()
+    }
+
     private fun stopped() {
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         stopSelf()
