@@ -137,6 +137,36 @@ class HomeWidgetsScreenshotTest {
         shoot("live-on-now", HomeKind.LIVE, 250f, 170f, race)
     }
 
+    /** Larger widgets show more: the weekend, the followed driver's place, the last podium, the next round. */
+    @Test
+    fun larger() {
+        val before = at("2025-07-02T12:00:00Z")
+        val ham = HomeSettings(driver = "HAM", team = "Ferrari")
+        shoot("larger-live-next-3x4", HomeKind.LIVE, 250f, 360f, before, ham)
+        shoot("larger-live-next-5x3", HomeKind.LIVE, 420f, 260f, before, ham)
+        shoot("larger-live-next-4x2", HomeKind.LIVE, 360f, 170f, before, ham)
+        shoot("larger-live-race-3x3", HomeKind.LIVE, 220f, 260f, at("2025-07-06T14:30:00Z"), ham, snapshot.copy(live = live))
+        shoot("larger-weekend-2x4", HomeKind.WEEKEND, 200f, 380f, before, ham)
+        shoot("larger-weekend-4x4", HomeKind.WEEKEND, 360f, 380f, before, ham)
+        shoot("larger-weekend-2x4-ticking", HomeKind.WEEKEND, 200f, 380f, at("2025-07-05T09:47:21Z"), ham)
+        shoot("larger-weekend-2x4-result", HomeKind.WEEKEND, 200f, 380f, at("2025-07-06T18:00:00Z"), ham)
+        shoot("larger-schedule-3x4", HomeKind.SCHEDULE, 250f, 380f, at("2025-07-05T12:00:00Z"))
+        shoot("larger-standings-5x4", HomeKind.STANDINGS, 440f, 380f, at("2025-07-08T12:00:00Z"), ham)
+    }
+
+    /** Each look option: see-through, Dim, no border, square corners, small and large text, no heading or team colours. */
+    @Test
+    fun looks() {
+        val now = at("2025-07-05T09:47:21Z")
+        fun with(own: HomeWidgetSettings) = HomeSettings(driver = "HAM", team = "Ferrari", widgets = mapOf("1" to own))
+        for (o in listOf(75, 50, 0)) shoot("look-opacity-$o", HomeKind.WEEKEND, 250f, 260f, now, with(HomeWidgetSettings(HomeKind.WEEKEND, opacity = o)))
+        shoot("look-dim-no-border-square", HomeKind.STANDINGS, 250f, 260f, now, with(HomeWidgetSettings(HomeKind.STANDINGS, tone = HomeWidgetSettings.DIM, border = false, corners = HomeWidgetSettings.SQUARE)))
+        shoot("look-text-small", HomeKind.WEEKEND, 250f, 260f, now, with(HomeWidgetSettings(HomeKind.WEEKEND, text = HomeWidgetSettings.SMALL)))
+        shoot("look-text-large", HomeKind.WEEKEND, 250f, 260f, now, with(HomeWidgetSettings(HomeKind.WEEKEND, text = HomeWidgetSettings.LARGE)))
+        shoot("look-text-large-standings", HomeKind.STANDINGS, 250f, 260f, now, with(HomeWidgetSettings(HomeKind.STANDINGS, text = HomeWidgetSettings.LARGE)))
+        shoot("look-no-heading-no-bars", HomeKind.LIVE, 250f, 260f, at("2025-07-06T14:30:00Z"), with(HomeWidgetSettings(HomeKind.LIVE, title = false, teamBars = false)), snapshot.copy(live = live))
+    }
+
     /** The widget picker's images: each widget at its usual size, drawn as above, at xxhdpi. */
     @Test
     fun previews() {
@@ -152,12 +182,12 @@ class HomeWidgetsScreenshotTest {
             val pen = Pen(context)
             val snap = if (kind == HomeKind.LIVE) snapshot.copy(live = live) else snapshot
             val own = HomeWidgetSettings(kind)
-            val b = Faces.bitmap(density, env) { c ->
+            val b = Faces.bitmap(density, env) { c, e ->
                 when (kind) {
-                    HomeKind.WEEKEND -> Faces.weekend(c, pen, env, HomeLogic.weekendView(schedule, snap.podium, now), schedule, "", false)
-                    HomeKind.SCHEDULE -> Faces.schedule(c, pen, env, schedule)
-                    HomeKind.STANDINGS -> Faces.standings(c, pen, env, snap, own, "", "")
-                    HomeKind.LIVE -> Faces.live(c, pen, env, snap.live, schedule, "")
+                    HomeKind.WEEKEND -> Faces.weekend(c, pen, e, HomeLogic.weekendView(schedule, snap.podium, now), schedule, snap, "", false)
+                    HomeKind.SCHEDULE -> Faces.schedule(c, pen, e, schedule)
+                    HomeKind.STANDINGS -> Faces.standings(c, pen, e, snap, own, "", "")
+                    HomeKind.LIVE -> Faces.live(c, pen, e, snap.live, schedule, snap, "")
                 }
             }
             save("home_widget_${kind.name.lowercase()}_preview", b, "src/main/res/drawable-nodpi")

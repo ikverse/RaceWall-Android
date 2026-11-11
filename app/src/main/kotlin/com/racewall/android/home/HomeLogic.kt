@@ -23,14 +23,62 @@ data class HomeWidgetSettings(
     val value: String = POINTS,
     val driver: String? = null,
     val team: String? = null,
+    /** How much of the background shows, in percent: 100, 75, 50, 25 or 0. The wallpaper shows through the rest. */
+    val opacity: Int = 100,
+    /** "black", or "dim": the design lock's Dim panels fill, #0b0b0b. */
+    val tone: String = BLACK,
+    /** The 1 dp outline. */
+    val border: Boolean = true,
+    /** "launcher" rounds the corners as the launcher's own widgets; "square" does not. */
+    val corners: String = LAUNCHER,
+    /** "small", "normal" or "large": every text, line and gap grows or shrinks together. */
+    val text: String = NORMAL,
+    /** The small capitals heading at the top. */
+    val title: Boolean = true,
+    /** The team colour line beside each driver or team. */
+    val teamBars: Boolean = true,
 ) {
+    /** How the picture looks, for [Faces]. */
+    fun look() = Look(
+        opacity = opacity.coerceIn(0, 100) / 100f,
+        dim = tone == DIM,
+        border = border,
+        square = corners == SQUARE,
+        scale = when (text) {
+            SMALL -> 0.88f
+            LARGE -> 1.18f
+            else -> 1f
+        },
+        title = title,
+        bars = teamBars,
+    )
+
     companion object {
         const val DRIVERS = "drivers"
         const val CONSTRUCTORS = "constructors"
         const val POINTS = "points"
         const val GAP = "gap"
+        const val BLACK = "black"
+        const val DIM = "dim"
+        const val LAUNCHER = "launcher"
+        const val SQUARE = "square"
+        const val SMALL = "small"
+        const val NORMAL = "normal"
+        const val LARGE = "large"
+        val OPACITIES = listOf(100, 75, 50, 25, 0)
     }
 }
+
+/** A widget's appearance, as [HomeWidgetSettings] sets it. */
+data class Look(
+    val opacity: Float = 1f,
+    val dim: Boolean = false,
+    val border: Boolean = true,
+    val square: Boolean = false,
+    val scale: Float = 1f,
+    val title: Boolean = true,
+    val bars: Boolean = true,
+)
 
 /** Set once, as Deskglow does: the driver and team every widget follows unless told otherwise. */
 @Serializable

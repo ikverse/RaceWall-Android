@@ -21,6 +21,26 @@ class HomeWidgetsTest {
     val podium by lazy { HomeFetch.parsePodium(FeedJson.parse(res("2025-r12-results.json")), at("2025-07-06T16:00:00Z"))!! }
 
     @Test
+    fun `widget settings saved before the look options still read, with the new look at its defaults`() {
+        val dir = kotlin.io.path.createTempDirectory().toFile()
+        val file = java.io.File(dir, "home-widget-settings.json")
+        file.writeText("""{"driver":"HAM","team":"","clock":"24","widgets":{"7":{"kind":"STANDINGS","table":"constructors","value":"gap","driver":null,"team":"Ferrari"}}}""")
+        val read = com.racewall.android.state.JsonStore(file).read(com.racewall.android.home.HomeSettings())
+        val own = read.of(7, com.racewall.android.home.HomeKind.STANDINGS)
+        assertEquals("constructors", own.table)
+        assertEquals("Ferrari", own.team)
+        assertEquals(com.racewall.android.home.Look(), own.look())
+        assertEquals("HAM", read.driver)
+        // And the new settings go round.
+        val changed = read.copy(widgets = mapOf("7" to own.copy(opacity = 50, tone = "dim", border = false, corners = "square", text = "large", title = false, teamBars = false)))
+        com.racewall.android.state.JsonStore(file).write(changed)
+        val again = com.racewall.android.state.JsonStore(file).read(com.racewall.android.home.HomeSettings())
+        assertEquals(changed, again)
+        assertEquals(com.racewall.android.home.Look(opacity = 0.5f, dim = true, border = false, square = true, scale = 1.18f, title = false, bars = false), again.of(7, com.racewall.android.home.HomeKind.STANDINGS).look())
+        dir.deleteRecursively()
+    }
+
+    @Test
     fun `countdowns read in days, hours and minutes, then minutes and seconds`() {
         val now = at("2026-10-09T00:00:00Z")
         assertEquals(listOf("2" to "DAYS", "05" to "HRS", "00" to "MIN"), HomeLogic.countdownParts(now, at("2026-10-11T05:00:00Z")))

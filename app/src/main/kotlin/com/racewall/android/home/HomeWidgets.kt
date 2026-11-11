@@ -103,7 +103,7 @@ object HomeWidgets {
     }
 
     /** The widget's sizes in dp: each size a launcher may show it at (Android 12 and later), or the one for this orientation. */
-    private fun sizes(context: Context, manager: AppWidgetManager, id: Int): List<Pair<Float, Float>> {
+    fun sizes(context: Context, manager: AppWidgetManager, id: Int): List<Pair<Float, Float>> {
         val o = manager.getAppWidgetOptions(id)
         if (Build.VERSION.SDK_INT >= 31) {
             val list = o.getParcelableArrayList<SizeF>(AppWidgetManager.OPTION_APPWIDGET_SIZES)
@@ -119,7 +119,7 @@ object HomeWidgets {
         return listOf(w.toFloat() to h.toFloat())
     }
 
-    private fun radius(context: Context): Float {
+    fun radius(context: Context): Float {
         val d = context.resources.displayMetrics.density
         return if (Build.VERSION.SDK_INT >= 31) runCatching { context.resources.getDimension(android.R.dimen.system_app_widget_background_radius) / d }.getOrDefault(16f) else 16f
     }
@@ -137,9 +137,10 @@ object HomeWidgets {
     }
 
     /** One widget at one size: its picture, its text for screen readers, its tap, and the ticking countdown. */
-    fun face(context: Context, kind: HomeKind, id: Int, pen: Pen, env: FaceEnv, snapshot: HomeSnapshot, schedule: List<ScheduledSession>, settings: HomeSettings): RemoteViews {
+    fun face(context: Context, kind: HomeKind, id: Int, pen: Pen, size: FaceEnv, snapshot: HomeSnapshot, schedule: List<ScheduledSession>, settings: HomeSettings): RemoteViews {
         val own = settings.of(id, kind)
         val driver = settings.driverFor(own)
+        val env = size.copy(look = own.look())
         val density = context.resources.displayMetrics.density
         val rv = RemoteViews(context.packageName, R.layout.home_widget)
         var tickAt: Long? = null
@@ -151,23 +152,23 @@ object HomeWidgets {
                 if (view is HomeLogic.WeekendView.Upcoming && HomeLogic.ticking(env.now, view.session.start!!)) tickAt = view.session.start
                 watch = view is HomeLogic.WeekendView.Live
                 described = describeWeekend(view, env)
-                Faces.bitmap(density, env) { Faces.weekend(it, pen, env, view, schedule, driver, tickAt != null) }
+                Faces.bitmap(density, env) { c, e -> Faces.weekend(c, pen, e, view, schedule, snapshot, driver, tickAt != null) }
             }
             HomeKind.SCHEDULE -> {
                 described = HomeLogic.weekend(schedule, env.now).let { s -> if (s.isEmpty()) "Schedule: none yet" else "${s.first().meeting}: " + s.joinToString("; ") { "${it.name} ${HomeLogic.dayTime(it.start!!, env.h24)}" } }
-                Faces.bitmap(density, env) { Faces.schedule(it, pen, env, schedule) }
+                Faces.bitmap(density, env) { c, e -> Faces.schedule(c, pen, e, schedule) }
             }
             HomeKind.STANDINGS -> {
                 val teams = own.table == HomeWidgetSettings.CONSTRUCTORS
                 described = if (teams) "Constructors' standings: " + snapshot.teams.take(5).joinToString("; ") { "${it.position} ${it.name} ${HomeLogic.valueText(it.points, it.points, false)}" }
                 else "Drivers' standings: " + snapshot.drivers.take(5).joinToString("; ") { "${it.position} ${it.name} ${HomeLogic.valueText(it.points, it.points, false)}" }
-                Faces.bitmap(density, env) { Faces.standings(it, pen, env, snapshot, own, driver, settings.teamFor(own)) }
+                Faces.bitmap(density, env) { c, e -> Faces.standings(c, pen, e, snapshot, own, driver, settings.teamFor(own)) }
             }
             HomeKind.LIVE -> {
                 val live = snapshot.live
                 watch = live == null && HomeLogic.onNow(schedule, env.now) != null
                 described = live?.let { l -> "${l.meeting} ${l.session}, ${HomeLogic.status(l).label}: " + l.rows.take(3).joinToString("; ") { "${it.position} ${it.code}" } } ?: "Live timing: not following a session"
-                Faces.bitmap(density, env) { Faces.live(it, pen, env, live, schedule, driver) }
+                Faces.bitmap(density, env) { c, e -> Faces.live(c, pen, e, live, schedule, snapshot, driver) }
             }
         }
         rv.setImageViewBitmap(R.id.face, bitmap)
@@ -175,7 +176,14 @@ object HomeWidgets {
         val at = tickAt
         if (at != null) {
             rv.setViewVisibility(R.id.tick, View.VISIBLE)
-            rv.setTextViewTextSize(R.id.tick, TypedValue.COMPLEX_UNIT_DIP, Tick.size(env.w, env.h))
+            // The face is laid out in drawing units; the countdown grows and shrinks with its text.
+            val inner = env.inner()
+            val scale = env.look.scale
+            rv.setTextViewTextSize(R.id.tick, TypedValue.COMPLEX_UNIT_DIP, Tick.size(inner.w, inner.h) * scale)
+            if (Build.VERSION.SDK_INT >= 31) {
+                rv.setViewLayoutMargin(R.id.tick, RemoteViews.MARGIN_START, Tick.START * scale, TypedValue.COMPLEX_UNIT_DIP)
+                rv.setViewLayoutMargin(R.id.tick, RemoteViews.MARGIN_BOTTOM, Tick.PAD * scale, TypedValue.COMPLEX_UNIT_DIP)
+            }
             // The chronometer counts from its base in elapsed time: the session's start in that clock.
             rv.setChronometer(R.id.tick, SystemClock.elapsedRealtime() + (at - env.now), null, true)
             rv.setChronometerCountDown(R.id.tick, true)
