@@ -75,6 +75,8 @@ interface TransportActions {
     suspend fun listRecordings(): List<Recording> = emptyList()
     /** Connects to live timing, or jumps to the live moment when already connected. */
     fun goLive() {}
+    /** "Go live now": fetches the schedule again and connects to live timing, whatever it says. */
+    fun goLiveNow() {}
     fun syncDelay() {}
     /** Stops following live timing and goes back to the last result. */
     fun leaveLive() {}
@@ -382,7 +384,7 @@ fun Transport(
 /**
  * The session picker: season (or your recordings), then event, then session, then Replay. It lists
  * the chosen season when it opens, and picks the season's last event and that event's last session.
- * While a session is on, it offers to go live first.
+ * While a session is on, it offers to go live first; otherwise it offers to go live now anyway.
  */
 @Composable
 private fun SessionPicker(actions: TransportActions, onNow: String?, isLive: Boolean, onClose: () -> Unit) {
@@ -449,6 +451,21 @@ private fun SessionPicker(actions: TransportActions, onNow: String?, isLive: Boo
                     BasicText("Live now: $onNow", style = Rw.body, modifier = Modifier.weight(1f))
                     RwButton(onClick = { onClose(); actions.goLive() }, on = true, label = if (isLive) "Follow live" else "Go live") { c ->
                         BasicText(if (isLive) "Follow live" else "Go live", style = Rw.text(13f, c))
+                    }
+                }
+            } else if (!isLive) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .drawBehind { drawLine(Rw.border, Offset(0f, size.height - 0.5f), Offset(size.width, size.height - 0.5f), 1.dp.toPx()) }
+                        .padding(bottom = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Dot(true, Rw.t1)
+                    BasicText("No session on the schedule now", style = Rw.body, modifier = Modifier.weight(1f))
+                    RwButton(onClick = { onClose(); actions.goLiveNow() }, label = "Go live now") { c ->
+                        BasicText("Go live now", style = Rw.text(13f, c))
                     }
                 }
             }

@@ -199,6 +199,15 @@ class CoreViewModel(app: Application) : AndroidViewModel(app), AppActions {
         if (lead != null && lead.live) lead.currentTime = lead.seekRange().endInclusive else core.goLive(account.current())
     }
 
+    /** "Go live now": the schedule fetched again (a failure is ignored), then live timing, whatever the schedule says. */
+    override fun goLiveNow() {
+        viewModelScope.launch {
+            Alerts.refresh(getApplication())
+            scheduleTick()
+            core.goLive(account.current())
+        }
+    }
+
     override fun syncDelay() {
         val ms = core.syncDelay()
         if (ms == null) core.say("No line crossing yet to sync to. Try again just after the leader crosses the line.")

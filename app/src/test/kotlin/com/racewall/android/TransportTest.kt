@@ -36,6 +36,10 @@ class TransportTest {
         var seeks = mutableListOf<Double>()
         var speed: Double? = null
         var replayed: String? = null
+        var liveNow = 0
+        override fun goLiveNow() {
+            liveNow++
+        }
         override fun toggle() {
             toggles++
         }
@@ -135,5 +139,24 @@ class TransportTest {
         assertEquals("2025/2025-07-06_British_Grand_Prix/2025-07-05_Qualifying/", a.replayed)
         // The picker has closed; the load is the app's, so closing it cannot stop the load.
         compose.onNodeWithContentDescription("Replay").assertDoesNotExist()
+    }
+
+    @Test
+    fun `with no session on, the picker offers to go live now`() {
+        val a = show()
+        compose.onNodeWithContentDescription("Pick a past session").performClick()
+        compose.onNodeWithText("No session on the schedule now").assertExists()
+        compose.onNodeWithContentDescription("Go live now").performClick()
+        assertEquals(1, a.liveNow)
+        // The picker has closed.
+        compose.onNodeWithContentDescription("Go live now").assertDoesNotExist()
+    }
+
+    @Test
+    fun `with a session on, the picker offers that session instead`() {
+        show(ui = UiState(onNow = OnNow("Qatar Grand Prix", "Practice 1")))
+        compose.onNodeWithContentDescription("Pick a past session").performClick()
+        compose.onNodeWithText("Live now: Qatar Grand Prix · Practice 1").assertExists()
+        compose.onNodeWithContentDescription("Go live now").assertDoesNotExist()
     }
 }
